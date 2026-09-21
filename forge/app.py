@@ -1,4 +1,4 @@
-"""RamosForge builder backend. Owner-only (FORGE_TOKEN), ephemeral builds."""
+"""VoidCore builder backend. Owner-only (FORGE_TOKEN), ephemeral builds."""
 import os, re, base64, io, zipfile
 from flask import Flask, request, jsonify, send_file, abort, send_from_directory
 

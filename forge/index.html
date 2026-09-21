@@ -3,11 +3,11 @@
 <head>
 <meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>RamosForge — Lab Payload Builder</title>
+<title>VoidCore — Lab Payload Builder</title>
 <style>
 :root{
-  --bg:#07090e; --panel:#0f1420; --panel2:#151c2e; --line:#1e2740;
-  --txt:#e6ecff; --dim:#66748f; --acc:#7c5cff; --acc2:#b06cff;
+  --bg:#07070b; --panel:#0d0d14; --panel2:#12121c; --line:#1c1c2e;
+  --txt:#e8e6f5; --dim:#6a6788; --acc:#8030f0; --acc2:#a259ff;
   --grn:#2ed573; --red:#ff4757; --cyn:#00d9ff; --warn:#ffa502;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -17,62 +17,61 @@ body{
   font-family:"JetBrains Mono","Fira Code",ui-monospace,Menlo,Consolas,monospace;
   min-height:100vh; overflow-x:hidden;
 }
-/* animated backdrop */
 #bg{position:fixed;inset:0;z-index:0;pointer-events:none;
   background:
-    radial-gradient(900px 500px at 15% -10%, rgba(124,92,255,.14), transparent 60%),
-    radial-gradient(700px 500px at 90% 110%, rgba(0,217,255,.08), transparent 55%);}
-#grid{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.35;
-  background-image:linear-gradient(rgba(124,92,255,.05) 1px,transparent 1px),
-                   linear-gradient(90deg,rgba(124,92,255,.05) 1px,transparent 1px);
-  background-size:44px 44px;
-  animation:drift 26s linear infinite;}
-@keyframes drift{to{background-position:44px 44px,44px 44px}}
+    radial-gradient(800px 480px at 50% -15%, rgba(128,48,240,.16), transparent 60%),
+    radial-gradient(600px 420px at 90% 110%, rgba(0,217,255,.05), transparent 55%);}
+#grid{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.3;
+  background-image:linear-gradient(rgba(128,48,240,.05) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(128,48,240,.05) 1px,transparent 1px);
+  background-size:46px 46px; animation:drift 28s linear infinite;}
+@keyframes drift{to{background-position:46px 46px,46px 46px}}
 .wrap{width:100%;max-width:980px;margin:0 auto;padding:30px 20px 44px;position:relative;z-index:1}
 
-/* entrance animations */
 @keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
 .r{opacity:0;animation:rise .6s cubic-bezier(.2,.8,.2,1) forwards}
 
-header{text-align:center;margin-bottom:26px}
-.logo{display:inline-flex;align-items:center;gap:12px;font-size:30px;font-weight:800;letter-spacing:-1px;
-  background:linear-gradient(90deg,#a78bfa,#7c5cff 40%,#00d9ff);
+header{text-align:center;margin-bottom:24px}
+.logo-link{display:inline-flex;align-items:center;gap:14px;text-decoration:none}
+.logo-img{width:52px;height:52px;border-radius:12px;flex:none;
+  filter:drop-shadow(0 0 14px rgba(128,48,240,.55));
+  transition:transform .3s cubic-bezier(.2,.8,.2,1);}
+.logo-link:hover .logo-img{transform:scale(1.08) rotate(-3deg)}
+.wordmark{font-size:30px;font-weight:800;letter-spacing:-1px;
+  background:linear-gradient(90deg,#c9a5ff,#8030f0 45%,#5ee0ff);
   -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
   background-size:200% auto;animation:shine 5s linear infinite}
 @keyframes shine{to{background-position:200% center}}
-.logo svg{width:34px;height:34px;flex:none}
-.hammer{transform-origin:50% 60%;animation:swing 2.4s ease-in-out infinite}
-@keyframes swing{0%,100%{transform:rotate(0)}25%{transform:rotate(-12deg)}60%{transform:rotate(7deg)}}
 .sub{color:var(--dim);margin-top:8px;font-size:13px;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--grn);box-shadow:0 0 10px var(--grn);animation:pulse 2s infinite}
 @keyframes pulse{50%{opacity:.4}}
 
 .tabs{display:flex;gap:6px;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:5px;margin-bottom:20px}
 .tab{flex:1;text-align:center;padding:13px 0;font-size:13px;font-weight:700;color:var(--dim);cursor:pointer;
-  border-radius:8px;transition:color .2s, background .2s, transform .2s;user-select:none;position:relative}
-.tab:hover{color:var(--txt);background:rgba(124,92,255,.08)}
+  border-radius:8px;transition:color .2s, background .2s, transform .2s;user-select:none}
+.tab:hover{color:var(--txt);background:rgba(128,48,240,.08)}
 .tab.active{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;
-  box-shadow:0 4px 18px rgba(124,92,255,.35);transform:translateY(-1px)}
+  box-shadow:0 4px 18px rgba(128,48,240,.4);transform:translateY(-1px)}
 
 .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:22px;margin-bottom:16px;
   position:relative;overflow:hidden;transition:border .25s, box-shadow .25s}
-.card:hover{border-color:rgba(124,92,255,.45);box-shadow:0 8px 30px rgba(0,0,0,.35)}
+.card:hover{border-color:rgba(128,48,240,.5);box-shadow:0 8px 34px rgba(0,0,0,.4)}
 .card::before{content:"";position:absolute;top:0;left:0;right:0;height:1px;
   background:linear-gradient(90deg,transparent,var(--acc),transparent)}
 .card-title{font-size:11px;font-weight:700;color:var(--dim);margin-bottom:14px;text-transform:uppercase;letter-spacing:.8px}
 .card-title b{color:var(--acc2)}
 
 label{display:block;font-size:11px;font-weight:700;color:var(--dim);margin-bottom:7px;text-transform:uppercase;letter-spacing:.5px}
-input[type=text],input[type=password]{width:100%;background:#080b11;border:1px solid var(--line);color:var(--txt);
+input[type=text],input[type=password]{width:100%;background:#05050a;border:1px solid var(--line);color:var(--txt);
   border-radius:10px;padding:13px 15px;font-family:inherit;font-size:13.5px;outline:none;
   transition:border .2s, box-shadow .2s, background .2s}
-input:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(124,92,255,.16);background:#0a0e16}
-input::placeholder{color:#39435c}
+input:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(128,48,240,.18);background:#0a0a12}
+input::placeholder{color:#3a3760}
 .hint{font-size:11px;color:var(--dim);margin-top:9px;line-height:1.6}
 
 .switch-row{display:flex;align-items:center;margin:18px 0;padding:14px 16px;background:var(--panel2);
   border-radius:11px;border:1px solid var(--line);transition:border .2s}
-.switch-row:hover{border-color:rgba(124,92,255,.4)}
+.switch-row:hover{border-color:rgba(128,48,240,.45)}
 .switch-label{display:flex;align-items:center;gap:12px;cursor:pointer;color:var(--txt);font-size:13px;user-select:none}
 .switch-input{appearance:none;width:46px;height:25px;background:var(--line);border-radius:13px;position:relative;transition:.25s;flex:none;cursor:pointer}
 .switch-input::before{content:"";position:absolute;top:2px;left:2px;width:21px;height:21px;background:#fff;border-radius:50%;
@@ -84,13 +83,13 @@ input::placeholder{color:#39435c}
 .btn{display:inline-flex;align-items:center;gap:8px;padding:13px 24px;border-radius:11px;font-size:13px;
   font-weight:700;font-family:inherit;cursor:pointer;border:none;transition:transform .15s, filter .15s, box-shadow .15s, background .15s}
 .btn:active{transform:scale(.96)}
-.btn-primary{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;box-shadow:0 4px 16px rgba(124,92,255,.3)}
-.btn-primary:hover{filter:brightness(1.12);transform:translateY(-2px);box-shadow:0 8px 24px rgba(124,92,255,.45)}
+.btn-primary{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;box-shadow:0 4px 16px rgba(128,48,240,.35)}
+.btn-primary:hover{filter:brightness(1.12);transform:translateY(-2px);box-shadow:0 8px 26px rgba(128,48,240,.5)}
 .btn-ghost{background:transparent;border:1px solid var(--line);color:var(--txt)}
-.btn-ghost:hover{background:rgba(124,92,255,.1);border-color:var(--acc);transform:translateY(-2px)}
+.btn-ghost:hover{background:rgba(128,48,240,.1);border-color:var(--acc);transform:translateY(-2px)}
 .btn:disabled{opacity:.4;cursor:not-allowed;transform:none!important}
 
-.output{margin-top:18px;padding:16px;background:#080b11;border:1px solid var(--line);border-radius:11px;
+.output{margin-top:18px;padding:16px;background:#05050a;border:1px solid var(--line);border-radius:11px;
   max-height:440px;overflow:auto;font-size:12px;line-height:1.7;white-space:pre-wrap;word-break:break-all;
   color:var(--dim);transition:border .2s}
 .output:focus{border-color:var(--acc)}
@@ -103,10 +102,9 @@ input::placeholder{color:#39435c}
 footer{margin-top:30px;text-align:center;color:var(--dim);font-size:11px;line-height:1.9}
 footer .sep{color:var(--line)}
 .gh{display:inline-flex;align-items:center;gap:7px;color:var(--dim);text-decoration:none;font-size:12px;
-  margin-top:8px;padding:8px 16px;border:1px solid var(--line);border-radius:9px;transition:.2s;display:inline-flex}
-.gh:hover{color:var(--txt);border-color:var(--acc);background:rgba(124,92,255,.08);transform:translateY(-1px)}
+  margin-top:8px;padding:8px 16px;border:1px solid var(--line);border-radius:9px;transition:.2s}
+.gh:hover{color:var(--txt);border-color:var(--acc);background:rgba(128,48,240,.08);transform:translateY(-1px)}
 
-/* toast */
 #toast{position:fixed;bottom:26px;left:50%;transform:translate(-50%,90px);z-index:50;
   background:var(--panel2);border:1px solid var(--acc);color:var(--txt);padding:12px 22px;border-radius:11px;
   font-size:13px;opacity:0;transition:transform .35s cubic-bezier(.2,.9,.3,1.2), opacity .35s;pointer-events:none;
@@ -114,7 +112,7 @@ footer .sep{color:var(--line)}
 #toast.show{transform:translate(-50%,0);opacity:1}
 #toast.err{border-color:var(--red)}
 
-@media(max-width:640px){.wrap{padding:18px 14px}.logo{font-size:23px}.card{padding:16px}.btn{flex:1;justify-content:center}}
+@media(max-width:640px){.wrap{padding:18px 14px}.wordmark{font-size:22px}.card{padding:16px}.btn{flex:1;justify-content:center}}
 </style>
 </head>
 <body>
@@ -122,12 +120,10 @@ footer .sep{color:var(--line)}
 <div class="wrap">
 
 <header class="r" style="animation-delay:.05s">
-  <div class="logo">
-    <svg class="hammer" viewBox="0 0 24 24" fill="none" stroke="#b06cff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M14 6l-4-4-3 3 4 4M10 9l-6 6 4 4 6-6M14 6l5 5-3 3-5-5"/>
-    </svg>
-    RamosForge
-  </div>
+  <a class="logo-link" href="/">
+    <img class="logo-img" src="/logo.webp" alt="VoidCore">
+    <span class="wordmark">VoidCore</span>
+  </a>
   <div class="sub"><span class="dot"></span>lab payload builder — forge · inspect · download</div>
 </header>
 
@@ -164,9 +160,9 @@ footer .sep{color:var(--line)}
 <footer class="r" style="animation-delay:.55s">
   ephemeral builds · configs die with the request · nothing stored server-side<br>
   <span class="sep">◆</span> authorized security research only <span class="sep">◆</span><br>
-  <a class="gh" href="https://github.com/zackmsa777-a11y/ramos-info-stealer" target="_blank" rel="noopener">
+  <a class="gh" href="https://github.com/zackmsa777-a11y/voidcore" target="_blank" rel="noopener">
     <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.3-1.8-1.3-1.8-1.1-.7 0-.7 0-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1a2.7 2.7 0 0 1 .8-1.7c-2.7-.3-5.5-1.3-5.5-6 0-1.2.5-2.3 1.3-3.1-.2-.4-.6-1.6.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.7 1.6.3 2.8.1 3.2.8.8 1.3 1.9 1.3 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3"/></svg>
-    full source · github.com/zackmsa777-a11y/ramos-info-stealer
+    full source · github.com/zackmsa777-a11y/voidcore
   </a>
 </footer>
 
@@ -208,7 +204,6 @@ async function forge(){
   say('forging '+(mode==='py'?'python':'jar')+'…','info');
   const v=target.value.trim();
   const body={encrypt:enc.checked};
-  // auto-detect: discord webhook vs C2 panel url
   if(/discord\.com\/api\/webhooks\//.test(v)) body.webhook=v; else body.c2=v;
   try{
     const r=await fetch('/build/'+mode,{method:'POST',headers:H(),body:JSON.stringify(body)});
@@ -217,7 +212,7 @@ async function forge(){
         say('✖ '+m,'err');toastSay(m,1);return;}
       const blob=await r.blob();
       const a=document.createElement('a');
-      a.href=URL.createObjectURL(blob); a.download='blackhole-client.jar'; a.click();
+      a.href=URL.createObjectURL(blob); a.download='voidcore.jar'; a.click();
       say('✔ jar forged — download started · '+(enc.checked?'config sealed':'config plaintext')+' · '+blob.size+' bytes','ok');
       toastSay('jar forged · '+blob.size+' bytes');
       return;

