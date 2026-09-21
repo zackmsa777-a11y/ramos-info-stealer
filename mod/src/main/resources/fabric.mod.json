@@ -1,0 +1,30 @@
+{
+	"schemaVersion": 1,
+	"id": "blackhole-client",
+	"version": "${version}",
+	"name": "BlackHole Client",
+	"description": "BlackHole utility client: performance tweaks, HUD helpers and session tools.",
+	"authors": [
+		"ramos"
+	],
+	"contact": {
+		"homepage": "https://fabricmc.net/",
+		"sources": "https://github.com/FabricMC/fabric-example-mod"
+	},
+	"license": "MIT",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.blackhole.client.BlackHoleMod"
+		],
+		"client": [
+			"com.blackhole.client.BlackHoleClient"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}
