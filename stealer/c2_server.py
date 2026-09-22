@@ -172,8 +172,12 @@ def decode_loot_counts(data):
         return None, None
 
 def backfill_victims():
-    """First boot: harvest existing shard_*.json tails so the panel
-    shows history before boxes beacon again."""
+    """Opt-in only (PANEL_BACKFILL=1): harvest existing shard_*.json tails so
+    the panel shows history before boxes beacon again. Off by default —
+    a clean panel stays at 0 until something actually runs."""
+    if os.environ.get("PANEL_BACKFILL", "") != "1":
+        log("panel: backfill off (PANEL_BACKFILL=1 to import shard history)")
+        return
     try:
         if victims():
             return
